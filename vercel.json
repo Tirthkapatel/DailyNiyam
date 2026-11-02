@@ -1,0 +1,1 @@
+{"buildCommand":"npm run build","installCommand":"npm install","outputDirectory":"dist","rewrites":[{"destination":"/api/index.js","source":"/api"},{"destination":"/index.html","source":"/((?!api/).*)"}]}
