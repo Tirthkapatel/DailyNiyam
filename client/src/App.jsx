@@ -429,16 +429,31 @@ function TimeField({ label, value, onChange, t, N, defaultAp, disabled }) {
   const [open, setOpen] = useState(false);
   const obj = strToTimeObj(value) || { h: 5, m: 30, ap: defaultAp || 'AM' };
   return (
-    <div className="row">
+    <div className="fcard">
       <div className="lab">{label}</div>
       <button type="button" className="timebtn" disabled={disabled} onClick={() => setOpen(true)}>
-        {value ? value.replace(/(\d+):(\d+)/, (m0, h, m) => `${N(h)}:${N(m)}`) : '— : —'}
+        <span className="ticon">🕐</span>{value ? value.replace(/(\d+):(\d+)/, (m0, h, m) => `${N(h)}:${N(m)}`) : '--:--'}
       </button>
       {open && (
         <TimeWheelPopup t={t} N={N} value={obj} allowClear={!!value}
           onClose={() => setOpen(false)}
           onDone={(o) => { setOpen(false); onChange(timeObjToStr(o)); }} />
       )}
+    </div>
+  );
+}
+
+function Ring({ pct, N }) {
+  const r = 52, c = 2 * Math.PI * r;
+  const col = pct >= 100 ? 'var(--green)' : 'var(--brand)';
+  return (
+    <div className="ring" aria-hidden="true">
+      <svg viewBox="0 0 120 120">
+        <circle className="ringtrack" cx="60" cy="60" r={r} />
+        <circle className="ringprog" cx="60" cy="60" r={r} stroke={col}
+          strokeDasharray={c} strokeDashoffset={c - (c * Math.max(0, Math.min(100, pct))) / 100} />
+      </svg>
+      <div className="ringpct" style={{ color: col }}>{N(pct)}%</div>
     </div>
   );
 }
@@ -492,75 +507,80 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved }) {
       <div className="card hero">
         <div className="motto">{t.motto}</div>
         {lang === 'en' && t.mottoEn ? <div className="motto-en">{t.mottoEn}</div> : null}
-        <div className="ringwrap">
-          <div>
-            <div className="bigpct" style={{ color: pct >= 100 ? 'var(--green)' : pct > 0 ? 'var(--accent2)' : 'var(--ink2)' }}>{N(pct)}%</div>
-            <div className="small">{t.percentDone}</div>
-          </div>
-          <div style={{ textAlign: 'left' }}>
-            <div className="small">{t.date}</div>
-            <input type="date" className="textin" style={{ width: 'auto' }} value={date} max={isoLocal()}
-              onChange={(e) => setDate(e.target.value)} />
-            <div style={{ fontWeight: 700, marginTop: 4 }}>{fmtDate(date, lang)}</div>
+        <div className="herorow">
+          <Ring pct={pct} N={N} />
+          <div className="heroright">
+            <div className="herodate">{fmtDate(date, lang)}</div>
+            <div className="herosub">{t.dayProgress} · {N(pct)}% {t.percentDone}</div>
+            <div className="datechiprow">
+              <span className="datelab">{t.date}</span>
+              <span className="datechip">
+                <input type="date" value={date} max={isoLocal()}
+                  onChange={(e) => setDate(e.target.value)} />
+              </span>
+            </div>
           </div>
         </div>
+        {existing
+          ? <div className="banner inhero">{t.submittedBanner}</div>
+          : <div className="notice">{t.noReport}</div>}
       </div>
 
-      {existing ? <div className="banner">{t.submittedBanner}</div> : null}
       {locked ? <div className="locknote">🔒 {t.lockedNote}</div> : null}
       {err ? <div className="err">{err}</div> : null}
 
-      <div className="card">
-        <fieldset disabled={locked}>
+      <fieldset className="fcards" disabled={locked}>
           <TimeField label={t.wakeTime} value={data.wakeTime} onChange={(v) => set('wakeTime', v)} t={t} N={N} defaultAp="AM" disabled={locked} />
-          <div className="row"><div className="lab">{t.mangala}</div>
+          <div className="fcard"><div className="lab">{t.mangala}</div>
             <Seg value={data.mangala} options={toggleOpts} onChange={(v) => set('mangala', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.mangalaAarti}</div>
+          <div className="fcard"><div className="lab">{t.mangalaAarti}</div>
             <Seg value={data.mangalaAarti} options={toggleOpts} onChange={(v) => set('mangalaAarti', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.dhyan}</div>
-            <Seg value={data.dhyan} options={triOpts} onChange={(v) => set('dhyan', v)} disabled={locked} /></div>
+          <div className="fcard stack"><div className="lab">{t.dhyan}</div>
+            <Seg value={data.dhyan} options={triOpts} onChange={(v) => set('dhyan', v)} disabled={locked} />
           {data.dhyan === 'partial' && (
-            <div className="row"><div className="lab"><small>{t.ketliMin}</small></div>
+            <div className="frow"><div className="lab"><small>{t.ketliMin}</small></div>
               <Stepper value={data.dhyanMinutes} onChange={(v) => set('dhyanMinutes', v)} disabled={locked} /></div>
           )}
-          <div className="row"><div className="lab">{t.katha}</div>
+          </div>
+          <div className="fcard"><div className="lab">{t.katha}</div>
             <Seg value={data.katha} options={toggleOpts} onChange={(v) => set('katha', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.vachanamrut}</div>
+          <div className="fcard"><div className="lab">{t.vachanamrut}</div>
             <Seg value={data.vachanamrut} options={toggleOpts} onChange={(v) => set('vachanamrut', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.chesta}</div>
+          <div className="fcard"><div className="lab">{t.chesta}</div>
             <Seg value={data.chesta} options={toggleOpts} onChange={(v) => set('chesta', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.mandir}</div>
+          <div className="fcard"><div className="lab">{t.mandir}</div>
             <Seg value={data.mandir} options={toggleOpts} onChange={(v) => set('mandir', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.dandvat}<small>{t.ketla}</small></div>
+          <div className="fcard"><div className="lab">{t.dandvat}<small>{t.ketla}</small></div>
             <Stepper value={data.dandvat} onChange={(v) => set('dandvat', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.bhajan}<small>{t.total}: {fmtDur(data.bhajanMinutes, t, N)}</small></div>
+          <div className="fcard"><div className="lab">{t.bhajan}<small>{t.total}: {fmtDur(data.bhajanMinutes, t, N)}</small></div>
             <DurationStepper minutes={data.bhajanMinutes} onChange={(v) => set('bhajanMinutes', v)} t={t} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.dhun}<small>{t.total}: {fmtDur(data.dhunMinutes, t, N)}</small></div>
+          <div className="fcard"><div className="lab">{t.dhun}<small>{t.total}: {fmtDur(data.dhunMinutes, t, N)}</small></div>
             <DurationStepper minutes={data.dhunMinutes} onChange={(v) => set('dhunMinutes', v)} t={t} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.pradakshina}<small>{t.ketli}</small></div>
+          <div className="fcard stack"><div className="frow"><div className="lab">{t.pradakshina}<small>{t.ketli}</small></div>
             <Stepper value={data.pradakshina} onChange={(v) => set('pradakshina', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab"><small>{t.whereDid}</small></div>
+          <div className="frow"><div className="lab"><small>{t.whereDid}</small></div>
             <input className="textin" style={{ maxWidth: 260 }} value={data.pradakshinaPlace} placeholder={t.placePlaceholder}
               onChange={(e) => set('pradakshinaPlace', e.target.value)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.mansiPuja}<small>{t.ketli}</small></div>
+          </div>
+          <div className="fcard"><div className="lab">{t.mansiPuja}<small>{t.ketli}</small></div>
             <Stepper value={data.mansiPuja} max={5} onChange={(v) => set('mansiPuja', v)} disabled={locked} />
             <span className="unit">{N(data.mansiPuja || 0)} / {N(5)}</span></div>
           <TimeField label={t.sleepTime} value={data.sleepTime} onChange={(v) => set('sleepTime', v)} t={t} N={N} defaultAp="PM" disabled={locked} />
-          <div className="row" style={{ alignItems: 'flex-start' }}><div className="lab">{t.mantavya}</div>
-            <textarea className="textin" style={{ maxWidth: 420 }} value={data.mantavya} placeholder={t.mantavyaPlaceholder}
+          <div className="fcard stack wide"><div className="lab">{t.mantavya}</div>
+            <textarea className="textin" value={data.mantavya} placeholder={t.mantavyaPlaceholder}
               onChange={(e) => set('mantavya', e.target.value)} disabled={locked} /></div>
-          <div className="row"><div className="lab">{t.vvrat}</div>
+          <div className="fcard stack"><div className="frow"><div className="lab">{t.vvrat}</div>
             <Seg value={data.vvrat} options={[{ v: 'yes', label: t.yes }, { v: 'no', label: t.no, cls: 'no' }]}
               onChange={(v) => set('vvrat', v)} disabled={locked} /></div>
-          <div className="row"><div className="lab"><small>{t.vvratNote}</small></div>
+          <div className="frow"><div className="lab"><small>{t.vvratNote}</small></div>
             <input className="textin" style={{ maxWidth: 260 }} value={data.vvratNote}
               onChange={(e) => set('vvratNote', e.target.value)} disabled={locked} /></div>
-        </fieldset>
-      </div>
+          </div>
+      </fieldset>
 
       {!locked && (
         <div className="savebar">
-          <button type="button" className="btn" disabled={busy} onClick={save} style={{ minWidth: 200 }}>
+          <button type="button" className="btn savebtn" disabled={busy} onClick={save}>
             {busy ? t.saving : savedFlash ? t.savedOk : t.save}
           </button>
         </div>
@@ -1367,7 +1387,7 @@ export default function App() {
       <header className="header">
         <div className="brand">
           <img src={iconUrl} alt="" />
-          <span>{t.appName}<small>{t.appNameGu} · {t.tagline}</small></span>
+          <span className="brandname">{lang === 'gu' ? t.appNameGu : t.appName}</span>
         </div>
         <div className="spacer" />
         <nav className="topnav">
@@ -1375,7 +1395,7 @@ export default function App() {
             <button key={k} type="button" className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{ic} {l}</button>
           ))}
         </nav>
-        <span className="uname">🙏 {user.name}</span>
+        <span className="uname">{user.name}</span>
       </header>
 
       <main className="main" key={tab}>
