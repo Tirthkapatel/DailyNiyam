@@ -222,7 +222,7 @@ export function Switch({ checked, onChange, disabled }) {
 }
 
 /* ---------- full read-only report detail (history + group feed) ---------- */
-export function DetailGrid({ data, t, N, customDefs }) {
+export function DetailGrid({ data, t, N, customDefs, editCount }) {
   if (!data) return null;
   const chip = (v) => v
     ? <span className="chip g">{t.yes}</span>
@@ -254,8 +254,15 @@ export function DetailGrid({ data, t, N, customDefs }) {
   if (data.vvratNote) rows.push([t.vvrat, data.vvratNote]);
   if (data.mantavya) rows.push([t.mantavya, data.mantavya]);
   return (
-    <div className="detailgrid">
-      {rows.map(([k, v], i) => <div key={i}><span>{k}</span><b>{v}</b></div>)}
+    <div>
+      {editCount > 0 ? (
+        <div style={{ textAlign: 'right', fontSize: 11.5, color: 'var(--ink2)', marginBottom: 2 }}>
+          {t.editedTag.replace('{n}', N(editCount))}
+        </div>
+      ) : null}
+      <div className="detailgrid">
+        {rows.map(([k, v], i) => <div key={i}><span>{k}</span><b>{v}</b></div>)}
+      </div>
     </div>
   );
 }
@@ -600,6 +607,9 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved, reportCo
             </div>
           </div>
         </div>
+        {existing && existing.editCount > 0
+          ? <div style={{ textAlign: 'right', fontSize: 11.5, color: 'var(--ink2)', marginTop: 6 }}>{t.editedTag.replace('{n}', N(existing.editCount))}</div>
+          : null}
         {existing
           ? <div className="banner inhero">{t.submittedBanner}</div>
           : <div className="notice">{t.noReport}</div>}
@@ -785,7 +795,7 @@ export function HistoryView({ reports, t, N, lang, onOpenDate }) {
           </button>
           {open === r.date && (
             <div style={{ padding: '0 2px 12px' }}>
-              <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} />
+              <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} editCount={r.editCount} />
               <div style={{ marginTop: 10 }}>
                 <button type="button" className="btn ghost small" onClick={() => onOpenDate(r.date)}>{t.view} →</button>
               </div>
@@ -810,7 +820,7 @@ function MemberReportCard({ entry, t, N, lang }) {
         </span>
         <span className="small">{open ? t.hideDetail : t.fullDetail}</span>
       </button>
-      {open && <DetailGrid data={entry.data} t={t} N={N} customDefs={entry.custom} />}
+      {open && <DetailGrid data={entry.data} t={t} N={N} customDefs={entry.custom} editCount={entry.editCount} />}
     </div>
   );
 }
@@ -835,8 +845,15 @@ export function GroupsView({ token, user, t, N, lang }) {
 
   const openGroup = async (id) => {
     setErr('');
+    // Instant shell: the detail page opens on THIS click with what the
+    // list already knows; the full detail swaps in when it arrives.
+    const known = groups.find((x) => x.id === id);
+    if (known && (!sel || sel.group.id !== id)) {
+      setSel({ group: { ...known, isGroupAdmin: known.myRole === 'owner' || known.myRole === 'admin' },
+        members: [], requests: [], feed: {}, feedDates: [], loading: true });
+    }
     try { const r = await api('getGroupDetail', { groupId: id }, token); setSel(r); }
-    catch (e) { if (e.code === 'not_member') setErr(t.errGeneric); }
+    catch (e) { setSel(null); if (e.code === 'not_member') setErr(t.errGeneric); }
   };
   useEffect(() => { if (sel) openGroup(sel.group.id); }, []); // eslint-disable-line
 
@@ -1364,7 +1381,7 @@ function AdminUserReports({ token, userId, t, N, lang }) {
             <span style={{ flex: 1 }}><b>{fmtDate(r.date, lang)}</b></span>
             <span className="small">{open === r.date ? t.hideDetail : t.fullDetail}</span>
           </button>
-          {open === r.date && <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} />}
+          {open === r.date && <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} editCount={r.editCount} />}
         </div>
       ))}
     </div>

@@ -16,7 +16,7 @@ const { createClient } = require('@libsql/client');
 const PORT = process.env.PORT || 8793;
 const SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-prod';
 const SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
-const EDIT_WINDOW_MS = 5 * 60 * 1000; // reports editable only 5 minutes after first save
+const EDIT_WINDOW_MS = 3 * 3600 * 1000; // reports editable for 3 hours after first save (his rule, Nov 2026)
 const RECOVERY_MAX_FAILS = 5;
 const RECOVERY_LOCK_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILS = 8;
@@ -54,6 +54,7 @@ const SCHEMA = [
      data TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      updated_at INTEGER NOT NULL,
+     edit_count INTEGER NOT NULL DEFAULT 0,
      UNIQUE(user_id, date)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_reports_user_date ON reports(user_id, date)`,
@@ -173,6 +174,7 @@ function ensureSchema() {
         `ALTER TABLE support_messages ADD COLUMN replied_by INTEGER`,
         `ALTER TABLE support_messages ADD COLUMN user_deleted_at INTEGER`,
         `ALTER TABLE events ADD COLUMN body TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE reports ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0`,
       ]) { try { await db.execute(s); } catch { /* already there */ } }
       // The group creator is the 'owner' member (immutable role).
       await db.execute(`UPDATE group_members SET role = 'owner'
@@ -455,6 +457,7 @@ function reportRow(r, cfg) {
   return {
     date: r.date, data, completion: computeCompletion(data, cfg),
     custom: cfg?.fields || [],
+    editCount: r.edit_count || 0,
     createdAt: r.created_at, updatedAt: r.updated_at,
     editDeadline: r.created_at + EDIT_WINDOW_MS,
     editable: Date.now() < r.created_at + EDIT_WINDOW_MS,
@@ -622,7 +625,7 @@ const actions = {
     const existing = await one(`SELECT * FROM reports WHERE user_id = ? AND date = ?`, [u.id, a.date]);
     if (existing) {
       if (now >= existing.created_at + EDIT_WINDOW_MS) throw { code: 'edit_window_expired' };
-      await db.execute({ sql: `UPDATE reports SET data = ?, updated_at = ? WHERE id = ?`,
+      await db.execute({ sql: `UPDATE reports SET data = ?, updated_at = ?, edit_count = edit_count + 1 WHERE id = ?`,
         args: [JSON.stringify(data), now, existing.id] });
     } else {
       await db.execute({ sql: `INSERT INTO reports (user_id, date, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
