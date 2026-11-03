@@ -36,7 +36,9 @@ const SCHEMA = [
      email TEXT UNIQUE NOT NULL,
      pass_hash TEXT NOT NULL,
      is_admin INTEGER NOT NULL DEFAULT 0,
-     created_at INTEGER NOT NULL
+     created_at INTEGER NOT NULL,
+     name_changed_at INTEGER,
+     deleted_at INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS sessions (
      token_hash TEXT PRIMARY KEY,
@@ -66,6 +68,7 @@ const SCHEMA = [
      group_id INTEGER NOT NULL,
      user_id INTEGER NOT NULL,
      joined_at INTEGER NOT NULL,
+     role TEXT NOT NULL DEFAULT 'member',
      PRIMARY KEY (group_id, user_id)
    )`,
   `CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members(user_id)`,
@@ -144,9 +147,65 @@ function ensureSchema() {
     schemaReady = (async () => {
       for (const stmt of SCHEMA) await db.execute(stmt);
       await db.execute(`INSERT OR IGNORE INTO app_settings (id) VALUES (1)`);
+      // Migrations for databases created before these columns existed
+      // (duplicate-column errors are expected there and ignored).
+      for (const s of [
+        `ALTER TABLE users ADD COLUMN name_changed_at INTEGER`,
+        `ALTER TABLE users ADD COLUMN deleted_at INTEGER`,
+        `ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`,
+      ]) { try { await db.execute(s); } catch { /* already there */ } }
+      // The group creator is the 'owner' member (immutable role).
+      await db.execute(`UPDATE group_members SET role = 'owner'
+        WHERE EXISTS (SELECT 1 FROM groups g WHERE g.id = group_members.group_id
+          AND g.admin_id = group_members.user_id) AND role != 'owner'`);
+      // Accounts whose 5-day deletion grace has expired are purged.
+      await purgeExpiredAccounts();
     })().catch((e) => { schemaReady = null; throw e; });
   }
   return schemaReady;
+}
+
+const FIVE_DAYS = 5 * 24 * 3600 * 1000;
+
+/* Permanently removes a user and everything attached to them. Groups
+   they own pass to the earliest admin (else earliest member); a group
+   with nobody left is deleted with its data. */
+async function purgeUser(uid) {
+  const u = await one(`SELECT email FROM users WHERE id = ?`, [uid]);
+  const owned = await all(`SELECT id FROM groups WHERE admin_id = ?`, [uid]);
+  for (const g of owned) {
+    const next = await one(`SELECT m.user_id FROM group_members m WHERE m.group_id = ? AND m.user_id != ?
+      ORDER BY CASE m.role WHEN 'admin' THEN 0 ELSE 1 END, m.joined_at ASC LIMIT 1`, [g.id, uid]);
+    if (next) {
+      await db.execute({ sql: `UPDATE groups SET admin_id = ? WHERE id = ?`, args: [next.user_id, g.id] });
+      await db.execute({ sql: `UPDATE group_members SET role = 'owner' WHERE group_id = ? AND user_id = ?`, args: [g.id, next.user_id] });
+    } else {
+      await db.execute({ sql: `DELETE FROM group_join_requests WHERE group_id = ?`, args: [g.id] });
+      await db.execute({ sql: `DELETE FROM invite_links WHERE group_id = ?`, args: [g.id] });
+      await db.execute({ sql: `DELETE FROM events WHERE group_id = ?`, args: [g.id] });
+      await db.execute({ sql: `DELETE FROM group_members WHERE group_id = ?`, args: [g.id] });
+      await db.execute({ sql: `DELETE FROM groups WHERE id = ?`, args: [g.id] });
+    }
+  }
+  await db.execute({ sql: `DELETE FROM reports WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM group_members WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM group_join_requests WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM backup_codes WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM sessions WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM events WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM support_messages WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM user_settings WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM invite_links WHERE created_by = ?`, args: [uid] });
+  if (u) await db.execute({ sql: `DELETE FROM auth_guards WHERE key IN (?, ?)`, args: ['login:' + u.email, 'recover:' + u.email] });
+  await db.execute({ sql: `DELETE FROM users WHERE id = ?`, args: [uid] });
+}
+async function purgeExpiredAccounts() {
+  const rows = await all(`SELECT id FROM users WHERE deleted_at IS NOT NULL AND deleted_at <= ?`,
+    [Date.now() - FIVE_DAYS]);
+  for (const r of rows) {
+    // One broken account must never block the rest (or schema init).
+    try { await purgeUser(r.id); } catch (e) { console.error('purge failed for user', r.id, e); }
+  }
 }
 
 /* ---------------- crypto helpers ---------------- */
@@ -204,6 +263,25 @@ async function pushEvent(userId, type, group, actorName) {
     VALUES (?, ?, ?, ?, ?, ?)`,
     args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', Date.now()] });
 }
+
+/* Group roles: 'owner' (the creator — from groups.admin_id, can never
+   be changed or removed), 'admin' (full management), 'member'. */
+async function memberRole(g, userId) {
+  if (g.admin_id === userId) return 'owner';
+  const m = await one(`SELECT role FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, userId]);
+  if (!m) return null;
+  return m.role === 'admin' ? 'admin' : 'member';
+}
+
+/* Loads the group and requires the caller to manage it (owner/admin). */
+async function requireGroupManager(token, groupId) {
+  const u = await requireUser(token);
+  const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(groupId) || 0]);
+  if (!g) throw { code: 'not_found' };
+  const role = await memberRole(g, u.id);
+  if (role !== 'owner' && role !== 'admin') throw { code: 'forbidden' };
+  return { u, g, role };
+}
 async function all(sql, args = []) { const r = await db.execute({ sql, args }); return r.rows; }
 
 async function createSession(userId) {
@@ -221,7 +299,9 @@ async function userFromToken(token) {
   return u || null;
 }
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, isAdmin: !!u.is_admin, createdAt: u.created_at };
+  return { id: u.id, name: u.name, email: u.email, isAdmin: !!u.is_admin, createdAt: u.created_at,
+    nameChangedAt: u.name_changed_at || null,
+    deletionUntil: u.deleted_at ? u.deleted_at + FIVE_DAYS : null };
 }
 async function requireUser(token) {
   const u = await userFromToken(token);
@@ -359,7 +439,12 @@ const actions = {
     const password = String(a.password || '');
     const key = 'login:' + email;
     if (await guardLocked(key)) throw { code: 'locked' };
-    const u = await one(`SELECT * FROM users WHERE email = ?`, [email]);
+    let u = await one(`SELECT * FROM users WHERE email = ?`, [email]);
+    // Deletion grace expired → the account is permanently gone.
+    if (u && u.deleted_at && Date.now() - u.deleted_at >= FIVE_DAYS) {
+      await purgeUser(u.id);
+      u = null;
+    }
     if (!u || !verifyPassword(password, u.pass_hash)) {
       await guardFail(key, LOGIN_MAX_FAILS, LOGIN_LOCK_MS);
       throw { code: 'invalid_credentials' };
@@ -377,6 +462,42 @@ const actions = {
   async me(a, token) {
     const u = await requireUser(token);
     return { user: publicUser(u) };
+  },
+
+  /* Name change — at most once every 5 days (his rule). The client
+     computes the remaining days from user.nameChangedAt. */
+  async changeName(a, token) {
+    const u = await requireUser(token);
+    const name = String(a.name || '').trim().replace(/\s+/g, ' ');
+    if (name.length < 2 || name.length > 40) throw { code: 'invalid_input' };
+    if (name === u.name) return { user: publicUser(u) };
+    if (u.name_changed_at && Date.now() - u.name_changed_at < FIVE_DAYS) {
+      throw { code: 'name_cooldown' };
+    }
+    await db.execute({ sql: `UPDATE users SET name = ?, name_changed_at = ? WHERE id = ?`,
+      args: [name, Date.now(), u.id] });
+    const fresh = await one(`SELECT * FROM users WHERE id = ?`, [u.id]);
+    return { user: publicUser(fresh) };
+  },
+
+  /* Account deletion — password-confirmed request; the account stays
+     fully usable (and the request cancellable) for 5 days, then it is
+     permanently purged (login/ensureSchema run the purge). */
+  async requestAccountDeletion(a, token) {
+    const u = await requireUser(token);
+    if (!u.deleted_at) {
+      if (!verifyPassword(String(a.password || ''), u.pass_hash)) throw { code: 'wrong_password' };
+      await db.execute({ sql: `UPDATE users SET deleted_at = ? WHERE id = ?`, args: [Date.now(), u.id] });
+    }
+    const fresh = await one(`SELECT * FROM users WHERE id = ?`, [u.id]);
+    return { user: publicUser(fresh) };
+  },
+
+  async cancelAccountDeletion(a, token) {
+    const u = await requireUser(token);
+    await db.execute({ sql: `UPDATE users SET deleted_at = NULL WHERE id = ?`, args: [u.id] });
+    const fresh = await one(`SELECT * FROM users WHERE id = ?`, [u.id]);
+    return { user: publicUser(fresh) };
   },
 
   async recoverWithBackupCode(a) {
@@ -503,7 +624,7 @@ const actions = {
     const r = await db.execute({ sql: `INSERT INTO groups (name, invite_code, admin_id, created_at) VALUES (?, ?, ?, ?)`,
       args: [name, code, u.id, Date.now()] });
     const gid = Number(r.lastInsertRowid);
-    await db.execute({ sql: `INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, args: [gid, u.id, Date.now()] });
+    await db.execute({ sql: `INSERT INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)`, args: [gid, u.id, Date.now()] });
     return { group: { id: gid, name, inviteCode: code, adminId: u.id } };
   },
 
@@ -576,17 +697,18 @@ const actions = {
 
   async listMyGroups(a, token) {
     const u = await requireUser(token);
-    const rows = await all(`SELECT g.*, (SELECT COUNT(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
+    const rows = await all(`SELECT g.*, m.role AS my_role, (SELECT COUNT(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
       FROM groups g JOIN group_members m ON m.group_id = g.id AND m.user_id = ? ORDER BY g.created_at ASC`, [u.id]);
     const groups = [];
     for (const g of rows) {
+      const myRole = g.admin_id === u.id ? 'owner' : (g.my_role === 'admin' ? 'admin' : 'member');
       let incomingPending = 0;
-      if (g.admin_id === u.id) {
+      if (myRole !== 'member') {
         const c = await one(`SELECT COUNT(*) AS c FROM group_join_requests WHERE group_id = ? AND status = 'pending'`, [g.id]);
         incomingPending = Number(c.c);
       }
       groups.push({ id: g.id, name: g.name, inviteCode: g.invite_code, adminId: g.admin_id,
-        isGroupAdmin: g.admin_id === u.id, memberCount: Number(g.member_count), incomingPending });
+        isGroupAdmin: myRole !== 'member', myRole, memberCount: Number(g.member_count), incomingPending });
     }
     // groups where I have a pending outgoing request
     const pend = await all(`SELECT g.name FROM groups g JOIN group_join_requests r ON r.group_id = g.id
@@ -600,10 +722,14 @@ const actions = {
     if (!g) throw { code: 'not_found' };
     const membership = await one(`SELECT * FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, u.id]);
     if (!membership) throw { code: 'not_member' }; // outsiders get nothing
-    const isGroupAdmin = g.admin_id === u.id;
-    const memberRows = await all(`SELECT u.id, u.name, u.email FROM group_members m JOIN users u ON u.id = m.user_id
+    const myRole = g.admin_id === u.id ? 'owner' : (membership.role === 'admin' ? 'admin' : 'member');
+    const isGroupAdmin = myRole !== 'member';
+    const memberRows = await all(`SELECT u.id, u.name, u.email, m.role FROM group_members m JOIN users u ON u.id = m.user_id
       WHERE m.group_id = ? ORDER BY m.joined_at ASC`, [g.id]);
-    const members = memberRows.map((m) => ({ id: m.id, name: m.name, email: m.email, isGroupAdmin: m.id === g.admin_id }));
+    const members = memberRows.map((m) => {
+      const role = m.id === g.admin_id ? 'owner' : (m.role === 'admin' ? 'admin' : 'member');
+      return { id: m.id, name: m.name, email: m.email, role, isGroupAdmin: role !== 'member' };
+    });
     // feed: every member's reports for today + previous 6 days, full detail
     const today = new Date();
     const dates = [];
@@ -622,7 +748,7 @@ const actions = {
         JOIN users u ON u.id = r.user_id WHERE r.group_id = ? AND r.status = 'pending' ORDER BY r.created_at ASC`, [g.id]);
       requests = reqs.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email, createdAt: r.created_at }));
     }
-    return { group: { id: g.id, name: g.name, inviteCode: g.invite_code, adminId: g.admin_id, isGroupAdmin },
+    return { group: { id: g.id, name: g.name, inviteCode: g.invite_code, adminId: g.admin_id, isGroupAdmin, myRole },
       members, requests, feed, feedDates: dates };
   },
 
@@ -631,9 +757,11 @@ const actions = {
     const req = await one(`SELECT * FROM group_join_requests WHERE id = ? AND status = 'pending'`, [Number(a.requestId) || 0]);
     if (!req) throw { code: 'not_found' };
     const g = await one(`SELECT * FROM groups WHERE id = ?`, [req.group_id]);
-    if (!g || g.admin_id !== u.id) throw { code: 'forbidden' };
+    if (!g) throw { code: 'not_found' };
+    const role0 = await memberRole(g, u.id);
+    if (role0 !== 'owner' && role0 !== 'admin') throw { code: 'forbidden' };
     await db.execute({ sql: `UPDATE group_join_requests SET status = 'approved' WHERE id = ?`, args: [req.id] });
-    await db.execute({ sql: `INSERT OR IGNORE INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`,
+    await db.execute({ sql: `INSERT OR IGNORE INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)`,
       args: [g.id, req.user_id, Date.now()] });
     // Notify the approved user (their app shows the welcome notification).
     await pushEvent(req.user_id, 'join_approved', g, u.name);
@@ -645,19 +773,67 @@ const actions = {
     const req = await one(`SELECT * FROM group_join_requests WHERE id = ? AND status = 'pending'`, [Number(a.requestId) || 0]);
     if (!req) throw { code: 'not_found' };
     const g = await one(`SELECT * FROM groups WHERE id = ?`, [req.group_id]);
-    if (!g || g.admin_id !== u.id) throw { code: 'forbidden' };
+    if (!g) throw { code: 'not_found' };
+    const role0 = await memberRole(g, u.id);
+    if (role0 !== 'owner' && role0 !== 'admin') throw { code: 'forbidden' };
     await db.execute({ sql: `UPDATE group_join_requests SET status = 'rejected' WHERE id = ?`, args: [req.id] });
     return { ok: true };
   },
 
   async removeMember(a, token) {
-    const u = await requireUser(token);
-    const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(a.groupId) || 0]);
-    if (!g) throw { code: 'not_found' };
+    const { g, role } = await requireGroupManager(token, a.groupId);
     const targetId = Number(a.userId) || 0;
-    if (g.admin_id !== u.id) throw { code: 'forbidden' };
-    if (targetId === g.admin_id) throw { code: 'invalid_input' }; // admin cannot be removed
+    if (targetId === g.admin_id) throw { code: 'owner_immutable' }; // the creator can never be removed
+    const tm = await one(`SELECT role FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, targetId]);
+    if (!tm) throw { code: 'not_member' };
+    if (tm.role === 'admin' && role !== 'owner') throw { code: 'forbidden' }; // only the owner removes an admin
     await db.execute({ sql: `DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, args: [g.id, targetId] });
+    return { ok: true };
+  },
+
+  /* Promote a member to admin, or demote an admin back to member.
+     Owners and admins can promote; only the owner can demote; the
+     creator's owner role is immutable and nobody changes their own. */
+  async setMemberRole(a, token) {
+    const { u, g, role } = await requireGroupManager(token, a.groupId);
+    const targetId = Number(a.userId) || 0;
+    const want = a.role === 'admin' ? 'admin' : 'member';
+    if (targetId === g.admin_id) throw { code: 'owner_immutable' };
+    if (targetId === u.id) throw { code: 'invalid_input' };
+    const tm = await one(`SELECT role FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, targetId]);
+    if (!tm) throw { code: 'not_member' };
+    if (want === 'member' && tm.role === 'admin' && role !== 'owner') throw { code: 'forbidden' };
+    await db.execute({ sql: `UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?`, args: [want, g.id, targetId] });
+    return { ok: true };
+  },
+
+  /* User search for the direct-add picker (group managers only;
+     existing members are excluded). */
+  async searchUsers(a, token) {
+    const { g } = await requireGroupManager(token, a.groupId);
+    const q = String(a.q || '').trim().toLowerCase();
+    if (q.length < 2) return { users: [] };
+    const rows = await all(`SELECT id, name, email FROM users WHERE deleted_at IS NULL
+      AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ?)
+      AND id NOT IN (SELECT user_id FROM group_members WHERE group_id = ?)
+      ORDER BY name ASC LIMIT 10`, [`%${q}%`, `%${q}%`, g.id]);
+    return { users: rows.map((r) => ({ id: r.id, name: r.name, email: r.email })) };
+  },
+
+  /* Managers add a user straight into the group (no request needed);
+     the added user gets the welcome event/notification. */
+  async addMemberDirect(a, token) {
+    const { u, g } = await requireGroupManager(token, a.groupId);
+    const targetId = Number(a.userId) || 0;
+    const target = await one(`SELECT * FROM users WHERE id = ?`, [targetId]);
+    if (!target || target.deleted_at) throw { code: 'not_found' };
+    const ex = await one(`SELECT * FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, targetId]);
+    if (ex) throw { code: 'already_member' };
+    await db.execute({ sql: `INSERT INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)`,
+      args: [g.id, targetId, Date.now()] });
+    await db.execute({ sql: `DELETE FROM group_join_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'`,
+      args: [g.id, targetId] });
+    await pushEvent(targetId, 'join_approved', g, u.name);
     return { ok: true };
   },
 
@@ -671,10 +847,7 @@ const actions = {
   },
 
   async resetInviteCode(a, token) {
-    const u = await requireUser(token);
-    const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(a.groupId) || 0]);
-    if (!g) throw { code: 'not_found' };
-    if (g.admin_id !== u.id) throw { code: 'forbidden' };
+    const { g } = await requireGroupManager(token, a.groupId);
     let code = genInviteCode();
     while (await one(`SELECT id FROM groups WHERE invite_code = ?`, [code])) code = genInviteCode();
     await db.execute({ sql: `UPDATE groups SET invite_code = ? WHERE id = ?`, args: [code, g.id] });

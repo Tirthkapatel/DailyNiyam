@@ -318,6 +318,9 @@ function errText(e, t) {
     case 'weak_password': return t.errWeak;
     case 'invalid_code': return t.errCode;
     case 'locked': return t.errLocked;
+    case 'owner_immutable': return t.errOwnerImmutable;
+    case 'already_member': return t.errAlreadyMember;
+    case 'name_cooldown': return t.nameRule;
     default: return t.errGeneric;
   }
 }
@@ -750,6 +753,7 @@ export function GroupsView({ token, user, t, N, lang }) {
   const [groups, setGroups] = useState([]);
   const [pendingMine, setPendingMine] = useState([]);
   const [sel, setSel] = useState(null); // group detail
+  const [hits, setHits] = useState([]); // add-member search results
   const [gname, setGname] = useState('');
   const [code, setCode] = useState(() => {
     const s = store.get('dn-join-code') || '';
@@ -867,15 +871,47 @@ export function GroupsView({ token, user, t, N, lang }) {
           </div>
         ))}
 
+        {g.isGroupAdmin && (
+          <div className="card">
+            <h3 className="sec">{t.addMemberTitle}</h3>
+            <input placeholder={t.searchUserPh} onChange={async (e) => {
+              const q = e.target.value.trim();
+              if (q.length < 2) { setHits([]); return; }
+              try { const r = await api('searchUsers', { groupId: g.id, q }, token); setHits(r.users || []); } catch { /* offline */ }
+            }} />
+            {hits.map((h) => (
+              <div key={h.id} className="row">
+                <div className="lab">{h.name}<small>{h.email}</small></div>
+                <button type="button" className="btn small" onClick={async () => {
+                  try {
+                    await api('addMemberDirect', { groupId: g.id, userId: h.id }, token);
+                    setHits([]); setMsg(t.memberAdded); openGroup(g.id); load();
+                  } catch (e2) { setErr(errText(e2, t)); }
+                }}>{t.addBtn}</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="card">
           <h3 className="sec">{t.members} ({N(sel.members.length)})</h3>
           {sel.members.map((m) => (
             <div key={m.id} className="row">
               <div className="lab">{m.name} {m.id === user.id ? `(${t.youBadge})` : ''}
-                {m.isGroupAdmin ? <> <span className="chip y">{t.adminBadge}</span></> : null}
+                {m.role === 'owner' ? <> <span className="chip y">{t.roleOwner}</span></> : m.role === 'admin' ? <> <span className="chip y">{t.roleAdmin}</span></> : null}
                 <small>{m.email}</small></div>
-              {g.isGroupAdmin && m.id !== user.id && (
-                <button type="button" className="btn ghost small" onClick={() => act('removeMember', { groupId: g.id, userId: m.id })}>{t.remove}</button>
+              {g.isGroupAdmin && m.id !== user.id && m.role !== 'owner' && (
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {m.role === 'member' && (
+                    <button type="button" className="btn ghost small" onClick={() => act('setMemberRole', { groupId: g.id, userId: m.id, role: 'admin' })}>⭐ {t.makeAdmin}</button>
+                  )}
+                  {m.role === 'admin' && g.myRole === 'owner' && (
+                    <button type="button" className="btn ghost small" onClick={() => act('setMemberRole', { groupId: g.id, userId: m.id, role: 'member' })}>{t.removeAdmin}</button>
+                  )}
+                  {(m.role === 'member' || g.myRole === 'owner') && (
+                    <button type="button" className="btn ghost small" onClick={() => act('removeMember', { groupId: g.id, userId: m.id })}>{t.remove}</button>
+                  )}
+                </span>
               )}
             </div>
           ))}
@@ -920,7 +956,7 @@ export function GroupsView({ token, user, t, N, lang }) {
 }
 
 /* ================= SETTINGS ================= */
-export function SettingsView({ token, user, t, N, lang, setLang, theme, setTheme, settings, saveSettings, fireAlert, onLogout }) {
+export function SettingsView({ token, user, setUser, t, N, lang, setLang, theme, setTheme, settings, saveSettings, fireAlert, onLogout }) {
   const [perm, setPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   const [timeOpen, setTimeOpen] = useState(false);
   const [curPw, setCurPw] = useState('');
@@ -931,6 +967,12 @@ export function SettingsView({ token, user, t, N, lang, setLang, theme, setTheme
   const [newCodes, setNewCodes] = useState(null); // freshly regenerated, shown once
   const [regenPw, setRegenPw] = useState('');
   const [contactMsg, setContactMsg] = useState('');
+  const [nameIn, setNameIn] = useState('');
+  const [profMsg, setProfMsg] = useState('');
+  const [profErr, setProfErr] = useState('');
+  const [delPw, setDelPw] = useState('');
+  const [delMsg, setDelMsg] = useState('');
+  const [delErr, setDelErr] = useState('');
   const [problemMsg, setProblemMsg] = useState('');
   const [helpMsg, setHelpMsg] = useState('');
   const [customInterval, setCustomInterval] = useState('');
@@ -940,6 +982,32 @@ export function SettingsView({ token, user, t, N, lang, setLang, theme, setTheme
   }, [token]);
   useEffect(() => { loadCodes(); }, [loadCodes]);
 
+  const doChangeName = async () => {
+    setProfErr(''); setProfMsg('');
+    try {
+      const r = await api('changeName', { name: nameIn.trim() }, token);
+      setUser(r.user); setNameIn(''); setProfMsg(t.nameChanged);
+    } catch (e) {
+      if (e.code === 'name_cooldown' && user.nameChangedAt) {
+        const days = Math.max(1, Math.ceil((user.nameChangedAt + 5 * 24 * 3600 * 1000 - Date.now()) / (24 * 3600 * 1000)));
+        setProfErr(t.nameCooldownMsg.replace('{d}', N(days)));
+      } else setProfErr(errText(e, t));
+    }
+  };
+  const doRequestDeletion = async () => {
+    setDelErr(''); setDelMsg('');
+    try {
+      const r = await api('requestAccountDeletion', { password: delPw }, token);
+      setUser(r.user); setDelPw(''); setDelMsg(t.deletionRequested);
+    } catch (e) { setDelErr(e.code === 'wrong_password' ? t.errInvalid : errText(e, t)); }
+  };
+  const doCancelDeletion = async () => {
+    setDelErr(''); setDelMsg('');
+    try {
+      const r = await api('cancelAccountDeletion', {}, token);
+      setUser(r.user); setDelMsg(t.deletionCancelled);
+    } catch (e) { setDelErr(errText(e, t)); }
+  };
   const changePw = async () => {
     setSecErr(''); setSecMsg('');
     try { await api('changePassword', { currentPassword: curPw, newPassword: newPw }, token); setSecMsg(t.savedOk); setCurPw(''); setNewPw(''); }
@@ -1082,8 +1150,39 @@ export function SettingsView({ token, user, t, N, lang, setLang, theme, setTheme
         <h3 className="sec">{t.account}</h3>
         <div className="row"><div className="lab">{t.name}</div><b>{user.name}</b></div>
         <div className="row"><div className="lab">{t.email}</div><b>{user.email}</b></div>
+        <div style={{ marginTop: 10 }}>
+          <label className="small" style={{ fontWeight: 700 }}>{t.changeName}</label>
+          {profErr ? <div className="err">{profErr}</div> : null}
+          {profMsg ? <div className="okmsg">{profMsg}</div> : null}
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            <input className="textin" style={{ flex: 1, minWidth: 150 }} placeholder={user.name} value={nameIn} onChange={(e) => setNameIn(e.target.value)} />
+            <button type="button" className="btn small" disabled={!nameIn.trim()} onClick={doChangeName}>{t.changeBtn}</button>
+          </div>
+          <p className="small" style={{ marginTop: 6 }}>{t.nameRule}</p>
+        </div>
         <div style={{ marginTop: 12 }}>
           <button type="button" className="btn danger" onClick={onLogout}>↪ {t.logout}</button>
+        </div>
+        <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
+          <label className="small" style={{ fontWeight: 700, color: 'var(--red, #c0392b)' }}>⚠️ {t.deleteAccount}</label>
+          {delErr ? <div className="err">{delErr}</div> : null}
+          {delMsg ? <div className="okmsg">{delMsg}</div> : null}
+          {user.deletionUntil ? (
+            <div style={{ marginTop: 6 }}>
+              <p className="small" style={{ fontWeight: 700 }}>
+                {t.deletePending.replace('{date}', fmtDate(new Date(user.deletionUntil).toISOString().slice(0, 10), lang))}
+              </p>
+              <button type="button" className="btn ghost small" style={{ marginTop: 6 }} onClick={doCancelDeletion}>{t.cancelDeletion}</button>
+            </div>
+          ) : (
+            <div style={{ marginTop: 6 }}>
+              <p className="small">{t.deleteNote}</p>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <input className="textin" style={{ flex: 1, minWidth: 150 }} type="password" placeholder={t.currentPassword} value={delPw} onChange={(e) => setDelPw(e.target.value)} />
+                <button type="button" className="btn danger small" disabled={!delPw} onClick={doRequestDeletion}>{t.deleteAccount}</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1641,7 +1740,7 @@ export default function App() {
         )}
         {tab === 'groups' && <GroupsView token={token} user={user} t={t} N={N} lang={lang} />}
         {tab === 'settings' && (
-          <SettingsView token={token} user={user} t={t} N={N} lang={lang} setLang={setLang}
+          <SettingsView token={token} user={user} setUser={setUser} t={t} N={N} lang={lang} setLang={setLang}
             theme={theme} setTheme={setTheme} settings={settings} saveSettings={saveSettings}
             fireAlert={fireAlert} onLogout={onLogout} />
         )}
