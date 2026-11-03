@@ -778,7 +778,7 @@ export function GroupsView({ token, user, t, N, lang }) {
   const inviteText = (g) => t.shareInvite
     .replaceAll('{name}', user?.name || '')
     .replaceAll('{group}', g.name)
-    .replaceAll('{link}', `${window.location.origin}/join/${g.inviteCode}`)
+    .replaceAll('{link}', `${window.location.origin}/join/${g.inviteCode}?by=${user?.id || ''}`)
     .replaceAll('{code}', g.inviteCode);
   const copyInvite = async () => {
     if (!sel) return;
@@ -1265,6 +1265,107 @@ export function AdminView({ token, t, N, lang, appStatus, refreshStatus }) {
 }
 
 /* ================= ROOT APP ================= */
+/* Big invitation page for /join/<code> links: who invited, the group, its
+   admin and details, with the Join button at the bottom. */
+export function InviteLanding({ t, lang, invite, user, token, onLogin, onClose, onDone }) {
+  const [pv, setPv] = useState(null);
+  const [state, setState] = useState('idle'); // idle|busy|sent|member|requested
+  const [err, setErr] = useState('');
+  const loc = lang === 'gu' ? 'gu-IN' : 'en-IN';
+
+  useEffect(() => {
+    const args = { code: invite.code };
+    const byNum = Number(invite.by || 0);
+    if (byNum > 0) args.by = byNum;
+    api('groupPreview', args).then(setPv)
+      .catch((e) => setErr(e.code === 'invalid_code' ? t.joinErrCode : t.errGeneric));
+  }, []); // eslint-disable-line
+
+  const join = async () => {
+    setState('busy'); setErr('');
+    try { await api('joinGroup', { code: invite.code }, token); setState('sent'); }
+    catch (e) {
+      if (e.code === 'already_member') setState('member');
+      else if (e.code === 'already_requested') setState('requested');
+      else { setState('idle'); setErr(e.code === 'invalid_code' ? t.joinErrCode : t.errGeneric); }
+    }
+  };
+
+  const row = (label, value) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '7px 0' }}>
+      <span style={{ color: 'var(--ink2)' }}>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+
+  return (
+    <div className="authwrap">
+      <div className="card authcard" style={{ textAlign: 'center' }}>
+        <img className="logo" src={iconUrl} alt="Daily Niyam" />
+        <h1 style={{ margin: '10px 0 0' }}>{t.appNameGu}</h1>
+        <div style={{ marginTop: 6, fontSize: 17, fontWeight: 700, color: 'var(--accent2)' }}>🙏 {t.inviteHeading}</div>
+        {pv ? (
+          <>
+            {pv.inviterName && (
+              <p style={{ margin: '14px 0 2px', fontSize: 16.5, color: 'var(--ink2)' }}>
+                {t.invitedBy.replace('{name}', pv.inviterName)}
+              </p>
+            )}
+            <h2 style={{ margin: '4px 0 10px', fontSize: 31 }}>{pv.name}</h2>
+            <div style={{ textAlign: 'left', borderTop: '1px solid var(--line)', marginTop: 6 }}>
+              {pv.adminName ? row(t.adminBadge, pv.adminName) : null}
+              {row(t.members, Number(pv.memberCount).toLocaleString(loc))}
+              {pv.createdAt ? row(t.inviteStarted, new Date(pv.createdAt).toLocaleDateString(loc, { day: 'numeric', month: 'short', year: 'numeric' })) : null}
+              {row(t.inviteCode, invite.code)}
+            </div>
+          </>
+        ) : (
+          !err && <p className="small" style={{ marginTop: 16 }}>…</p>
+        )}
+        {err && <p style={{ color: 'var(--red)', marginTop: 14 }}>{err}</p>}
+        <div style={{ marginTop: 22 }}>
+          {pv && state === 'sent' && (
+            <>
+              <div style={{ padding: '10px 12px', borderRadius: 12, background: 'var(--accent-soft, #FBE3C2)', fontWeight: 600, marginBottom: 12 }}>{t.joinSent}</div>
+              <button type="button" className="btn" style={{ width: '100%' }} onClick={onDone}>{t.inviteViewGroups}</button>
+            </>
+          )}
+          {pv && (state === 'member' || state === 'requested') && (
+            <>
+              <div style={{ padding: '10px 12px', borderRadius: 12, background: 'var(--accent-soft, #FBE3C2)', fontWeight: 600, marginBottom: 12 }}>
+                {state === 'member' ? t.alreadyMember : t.alreadyRequested}
+              </div>
+              <button type="button" className="btn" style={{ width: '100%' }} onClick={onDone}>{t.inviteViewGroups}</button>
+            </>
+          )}
+          {pv && state !== 'sent' && state !== 'member' && state !== 'requested' && (
+            user ? (
+              <>
+                <button type="button" className="btn" style={{ width: '100%' }} disabled={state === 'busy'} onClick={join}>
+                  {state === 'busy' ? '…' : t.joinBtn}
+                </button>
+                <div style={{ marginTop: 8 }}>
+                  <button type="button" className="linkbtn" onClick={onClose}>{t.inviteSkip}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn" style={{ width: '100%' }} onClick={onLogin}>{t.inviteLoginBtn}</button>
+                <div style={{ marginTop: 8 }}>
+                  <button type="button" className="linkbtn" onClick={onClose}>{t.inviteSkip}</button>
+                </div>
+              </>
+            )
+          )}
+          {!pv && err && (
+            <button type="button" className="btn" style={{ width: '100%' }} onClick={onClose}>{t.inviteViewGroups}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [lang, setLang] = useState(() => store.get('dn-lang') || 'gu');
   const [theme, setTheme] = useState(() => store.get('dn-theme') || 'light');
@@ -1283,6 +1384,15 @@ export default function App() {
   const [alertBox, setAlertBox] = useState(null); // { title, body }
   const [updDismissed, setUpdDismissed] = useState(() => store.sget('dn-upd-dismissed') || '');
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  const [inviteView, setInviteView] = useState(() => {
+    const c = store.get('dn-join-code');
+    return c ? { code: c, by: store.get('dn-join-by') || '' } : null;
+  });
+  const [authForInvite, setAuthForInvite] = useState(false);
+  const closeInvite = () => {
+    setInviteView(null); setAuthForInvite(false);
+    store.del('dn-join-code'); store.del('dn-join-by');
+  };
 
   useEffect(() => { store.set('dn-lang', lang); document.documentElement.lang = lang === 'gu' ? 'gu' : 'en'; }, [lang]);
   useEffect(() => { store.set('dn-theme', theme); document.documentElement.dataset.theme = theme; }, [theme]);
@@ -1297,12 +1407,16 @@ export default function App() {
     return () => clearInterval(id);
   }, [refreshStatus]);
 
-  /* invite link: /join/NIYAM-XXXXXX (or ?join=) — stash the code, clean the URL */
+  /* invite link: /join/NIYAM-XXXXXX?by=<id> (or ?join=) — stash + open the invitation page */
   useEffect(() => {
     const m = window.location.pathname.match(/\/join\/(NIYAM-[A-Za-z0-9]+)/i)
       || window.location.search.match(/[?&]join=(NIYAM-[A-Za-z0-9]+)/i);
     if (m) {
-      store.set('dn-join-code', m[1].toUpperCase());
+      const code = m[1].toUpperCase();
+      const by = new URLSearchParams(window.location.search).get('by') || '';
+      store.set('dn-join-code', code);
+      if (by) store.set('dn-join-by', by);
+      setInviteView({ code, by });
       window.history.replaceState({}, '', '/');
     }
   }, []);
@@ -1397,12 +1511,14 @@ export default function App() {
 
   const onAuthed = (r, isSignup) => {
     store.set('dn-token', r.token);
+    setAuthForInvite(false); // back to the invitation page, if one is open
     if (isSignup && r.backupCodes) { setPendingCodes({ token: r.token, user: r.user, codes: r.backupCodes }); return; }
     setToken(r.token); setUser(r.user); setTab('report');
   };
   const finishCodes = () => {
     if (!pendingCodes) return;
     setToken(pendingCodes.token); setUser(pendingCodes.user); setPendingCodes(null); setTab('report');
+    setAuthForInvite(false);
   };
   const onLogout = async () => {
     try { await api('logout', {}, token); } catch { /* */ }
@@ -1435,6 +1551,13 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  if (inviteView && !authForInvite) {
+    return <InviteLanding t={t} lang={lang} invite={inviteView} user={user} token={token}
+      onLogin={() => setAuthForInvite(true)}
+      onClose={closeInvite}
+      onDone={() => { closeInvite(); setTab('groups'); }} />;
   }
 
   if (!user) {

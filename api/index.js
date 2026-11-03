@@ -472,10 +472,21 @@ const actions = {
   // to whoever holds the link is fine — no member data leaks.
   async groupPreview(a) {
     const code = normalizeCode(a.code);
-    const g = await one(`SELECT g.name, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
+    const g = await one(`SELECT g.id, g.name, g.admin_id, g.created_at, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
       FROM groups g WHERE g.invite_code = ?`, [code]);
     if (!g) throw { code: 'invalid_code' };
-    return { name: g.name, memberCount: Number(g.member_count) };
+    const admin = await one(`SELECT name FROM users WHERE id = ?`, [g.admin_id]);
+    // The inviter's name is shown ONLY when that user really is a member
+    // of this group — a hand-edited ?by= in the link cannot fake a name.
+    let inviterName = null;
+    const by = Number(a.by || 0);
+    if (by > 0) {
+      const inv = await one(`SELECT u.name FROM group_members m JOIN users u ON u.id = m.user_id
+        WHERE m.group_id = ? AND m.user_id = ?`, [g.id, by]);
+      if (inv) inviterName = inv.name;
+    }
+    return { name: g.name, memberCount: Number(g.member_count),
+      adminName: admin ? admin.name : '', inviterName, createdAt: Number(g.created_at || 0) };
   },
 
   async joinGroup(a, token) {
