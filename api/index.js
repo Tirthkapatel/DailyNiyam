@@ -102,7 +102,11 @@ const SCHEMA = [
      type TEXT NOT NULL,
      message TEXT NOT NULL,
      created_at INTEGER NOT NULL,
-     read_at INTEGER
+     read_at INTEGER,
+     reply TEXT,
+     reply_at INTEGER,
+     replied_by INTEGER,
+     user_deleted_at INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS app_settings (
      id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -144,6 +148,7 @@ const SCHEMA = [
      group_id INTEGER NOT NULL DEFAULT 0,
      group_name TEXT NOT NULL DEFAULT '',
      actor_name TEXT NOT NULL DEFAULT '',
+     body TEXT NOT NULL DEFAULT '',
      created_at INTEGER NOT NULL,
      seen_at INTEGER
    )`,
@@ -163,6 +168,11 @@ function ensureSchema() {
         `ALTER TABLE users ADD COLUMN deleted_at INTEGER`,
         `ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`,
         `ALTER TABLE user_settings ADD COLUMN hidden_items TEXT NOT NULL DEFAULT '[]'`,
+        `ALTER TABLE support_messages ADD COLUMN reply TEXT`,
+        `ALTER TABLE support_messages ADD COLUMN reply_at INTEGER`,
+        `ALTER TABLE support_messages ADD COLUMN replied_by INTEGER`,
+        `ALTER TABLE support_messages ADD COLUMN user_deleted_at INTEGER`,
+        `ALTER TABLE events ADD COLUMN body TEXT NOT NULL DEFAULT ''`,
       ]) { try { await db.execute(s); } catch { /* already there */ } }
       // The group creator is the 'owner' member (immutable role).
       await db.execute(`UPDATE group_members SET role = 'owner'
@@ -269,10 +279,10 @@ async function resolveInvite(segment) {
 }
 
 /* In-app event (the clients poll these and turn them into notifications). */
-async function pushEvent(userId, type, group, actorName) {
-  await db.execute({ sql: `INSERT INTO events (user_id, type, group_id, group_name, actor_name, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', Date.now()] });
+async function pushEvent(userId, type, group, actorName, body = '') {
+  await db.execute({ sql: `INSERT INTO events (user_id, type, group_id, group_name, actor_name, body, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', String(body || '').slice(0, 300), Date.now()] });
 }
 
 /* Group roles: 'owner' (the creator — from groups.admin_id, can never
@@ -702,6 +712,25 @@ const actions = {
     return { ok: true };
   },
 
+  /* The user's own support messages (with admin replies), newest
+     first. Messages the user deleted from their view are excluded. */
+  async listMySupport(a, token) {
+    const u = await requireUser(token);
+    const rows = await all(`SELECT * FROM support_messages WHERE user_id = ? AND user_deleted_at IS NULL
+      ORDER BY created_at DESC LIMIT 100`, [u.id]);
+    return { messages: rows.map((r) => ({ id: r.id, type: r.type, message: r.message,
+      createdAt: r.created_at, reply: r.reply || '', replyAt: r.reply_at || 0 })) };
+  },
+
+  /* Soft-delete from the USER's view only — the admin inbox keeps
+     every message (his rule). */
+  async deleteMySupportMessage(a, token) {
+    const u = await requireUser(token);
+    await db.execute({ sql: `UPDATE support_messages SET user_deleted_at = ? WHERE id = ? AND user_id = ?`,
+      args: [Date.now(), Number(a.id) || 0, u.id] });
+    return { ok: true };
+  },
+
   /* ---- groups ---- */
   async createGroup(a, token) {
     const u = await requireUser(token);
@@ -765,7 +794,7 @@ const actions = {
         args: [Date.now(), ...ids] });
     }
     return { events: rows.map((r) => ({ id: r.id, type: r.type, groupId: r.group_id,
-      groupName: r.group_name, actorName: r.actor_name, createdAt: r.created_at })) };
+      groupName: r.group_name, actorName: r.actor_name, body: r.body || '', createdAt: r.created_at })) };
   },
 
   async joinGroup(a, token) {
@@ -936,6 +965,31 @@ const actions = {
     return { ok: true };
   },
 
+  /* Rename the group (owner or admin). */
+  async renameGroup(a, token) {
+    const { g } = await requireGroupManager(token, a.groupId);
+    const name = String(a.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (name.length < 2) throw { code: 'invalid_input' };
+    await db.execute({ sql: `UPDATE groups SET name = ? WHERE id = ?`, args: [name, g.id] });
+    return { ok: true, name };
+  },
+
+  /* Delete the whole group — OWNER only (admins manage, they cannot
+     destroy the group). Members simply lose the group; their own
+     reports are untouched. */
+  async deleteGroup(a, token) {
+    const u = await requireUser(token);
+    const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(a.groupId) || 0]);
+    if (!g) throw { code: 'not_found' };
+    if (g.admin_id !== u.id) throw { code: 'forbidden' };
+    await db.execute({ sql: `DELETE FROM group_join_requests WHERE group_id = ?`, args: [g.id] });
+    await db.execute({ sql: `DELETE FROM invite_links WHERE group_id = ?`, args: [g.id] });
+    await db.execute({ sql: `DELETE FROM events WHERE group_id = ?`, args: [g.id] });
+    await db.execute({ sql: `DELETE FROM group_members WHERE group_id = ?`, args: [g.id] });
+    await db.execute({ sql: `DELETE FROM groups WHERE id = ?`, args: [g.id] });
+    return { ok: true };
+  },
+
   async resetInviteCode(a, token) {
     const { g } = await requireGroupManager(token, a.groupId);
     let code = genInviteCode();
@@ -988,7 +1042,22 @@ const actions = {
     await requireAdmin(token);
     const rows = await all(`SELECT * FROM support_messages ORDER BY created_at DESC LIMIT 500`);
     return { messages: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, email: r.email,
-      type: r.type, message: r.message, createdAt: r.created_at, readAt: r.read_at })) };
+      type: r.type, message: r.message, createdAt: r.created_at, readAt: r.read_at,
+      reply: r.reply || '', replyAt: r.reply_at || 0, userDeleted: !!r.user_deleted_at })) };
+  },
+
+  /* Admin replies to a user's message; the user is notified through
+     the events system (their app shows it + keeps it in My Messages). */
+  async adminReplyMessage(a, token) {
+    const adm = await requireAdmin(token);
+    const reply = String(a.reply || '').trim().slice(0, 4000);
+    if (!reply) throw { code: 'invalid_input' };
+    const m = await one(`SELECT * FROM support_messages WHERE id = ?`, [Number(a.id) || 0]);
+    if (!m) throw { code: 'not_found' };
+    await db.execute({ sql: `UPDATE support_messages SET reply = ?, reply_at = ?, replied_by = ? WHERE id = ?`,
+      args: [reply, Date.now(), adm.id, m.id] });
+    await pushEvent(m.user_id, 'support_reply', null, adm.name, reply);
+    return { ok: true };
   },
 
   async adminMarkSupportRead(a, token) {

@@ -277,19 +277,50 @@ export function LineChart({ points, max, t, N, greenAtFull }) {
       <text x={4} y={y(max) + 4} fontSize="11" fill="var(--ink2)">{N(max)}</text>
       <text x={4} y={y(0) + 4} fontSize="11" fill="var(--ink2)">{N(0)}</text>
       {runs.map((run, ri) => run.length > 1 ? (
-        <polyline key={ri} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinejoin="round"
-          points={run.map((i) => `${x(i)},${y(points[i].y)}`).join(' ')} />
+        greenAtFull
+          ? run.slice(1).map((bi, k) => (
+            <line key={`${ri}-${k}`} x1={x(run[k])} y1={y(points[run[k]].y)} x2={x(bi)} y2={y(points[bi].y)}
+              stroke={completionVar(points[bi].y)} strokeWidth="2.5" strokeLinecap="round" />
+          ))
+          : <polyline key={ri} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinejoin="round"
+              points={run.map((i) => `${x(i)},${y(points[i].y)}`).join(' ')} />
       ) : null)}
       {points.map((p, i) => (p.y === null || p.y === undefined) ? (
         <circle key={i} cx={x(i)} cy={y(0)} r="4.5" fill="none" stroke="var(--red)" strokeWidth="2" />
       ) : (
         <circle key={i} cx={x(i)} cy={y(p.y)} r="4.5"
-          fill={greenAtFull && p.y >= max ? 'var(--green)' : greenAtFull ? 'var(--red)' : 'var(--accent)'}
+          fill={greenAtFull ? completionVar(p.y) : 'var(--accent)'}
           stroke="var(--card)" strokeWidth="1.5">
           <title>{p.label}: {N(p.y)}</title>
         </circle>
       ))}
     </svg>
+  );
+}
+
+/* Admin's reply box inside one inbox message: shows any earlier
+   reply, and sends a new one (the user gets a notification). */
+function AdminReplyBox({ token, m, t, reload }) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <div style={{ marginTop: 6 }}>
+      {m.userDeleted ? <div className="small">🗑️ {t.userDeletedTag}</div> : null}
+      {m.reply ? (
+        <div className="replybox">
+          <div className="rt">🙏 {t.adminReplyTag}</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{m.reply}</div>
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+        <input className="textin" style={{ flex: 1, minWidth: 120 }} placeholder={t.replyPh}
+          value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <button type="button" className="btn small" disabled={busy || draft.trim().length < 1}
+          onClick={async () => { setBusy(true); try { await api('adminReplyMessage', { id: m.id, reply: draft.trim() }, token); setDraft(''); reload(); } catch { /* */ } setBusy(false); }}>
+          {t.sendReply}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -462,6 +493,10 @@ export function completionOf(d, cfg) {
   return total ? Math.round((n / total) * 100) : 0;
 }
 
+/* Completion colour bands: least = red, medium = yellow, best = green. */
+export const completionVar = (pct) =>
+  pct >= 80 ? 'var(--green)' : pct >= 40 ? 'var(--gold)' : 'var(--red)';
+
 function TimeField({ label, value, onChange, t, N, defaultAp, disabled }) {
   const [open, setOpen] = useState(false);
   const obj = strToTimeObj(value) || { h: 5, m: 30, ap: defaultAp || 'AM' };
@@ -482,7 +517,7 @@ function TimeField({ label, value, onChange, t, N, defaultAp, disabled }) {
 
 function Ring({ pct, N }) {
   const r = 52, c = 2 * Math.PI * r;
-  const col = pct >= 100 ? 'var(--green)' : 'var(--brand)';
+  const col = completionVar(pct);
   return (
     <div className="ring" aria-hidden="true">
       <svg viewBox="0 0 120 120">
@@ -708,13 +743,14 @@ export function ProgressView({ reports, t, N, lang }) {
           {calDays.map((d, i) => {
             if (!d) return <div key={i} className="d none" />;
             const r = byDate[d];
-            const cls = r ? (r.completion >= 100 ? 'full' : 'part') : (d < today ? 'part' : '');
+            const cls = r ? (r.completion >= 80 ? 'full' : r.completion >= 40 ? 'mid' : 'part') : (d < today ? 'part' : '');
             return <div key={i} className={'d ' + cls} title={r ? `${r.completion}%` : t.noReportDay}>{N(Number(d.slice(8)))}</div>;
           })}
         </div>
         <div className="legend">
-          <span><span className="dot" style={{ background: 'var(--green)' }} />{N(100)}%</span>
-          <span><span className="dot" style={{ background: '#f3c1bf' }} />{t.noReportDay} / &lt; {N(100)}%</span>
+          <span><span className="dot" style={{ background: 'var(--green)' }} />{N(80)}%+</span>
+          <span><span className="dot" style={{ background: 'var(--gold)' }} />{N(40)}–{N(79)}%</span>
+          <span><span className="dot" style={{ background: '#f3c1bf' }} />&lt; {N(40)}% / {t.noReportDay}</span>
         </div>
       </div>
     </div>
@@ -731,7 +767,7 @@ export function HistoryView({ reports, t, N, lang, onOpenDate }) {
       {sorted.map((r) => (
         <div key={r.date}>
           <button type="button" className="histrow" onClick={() => setOpen(open === r.date ? '' : r.date)}>
-            <span className={'pct' + (r.completion >= 100 ? ' full' : ' low')}>{N(r.completion)}%</span>
+            <span className={'pct' + (r.completion >= 80 ? ' full' : r.completion >= 40 ? ' mid' : ' low')}>{N(r.completion)}%</span>
             <span style={{ flex: 1 }}>
               <b>{fmtDate(r.date, lang)}</b>
               <span className="small" style={{ display: 'block' }}>
@@ -860,6 +896,18 @@ export function GroupsView({ token, user, t, N, lang }) {
             )}
             {!g.isGroupAdmin && (
               <button type="button" className="btn ghost small" onClick={() => act('leaveGroup', { groupId: g.id }).then(() => setSel(null))}>{t.leave}</button>
+            )}
+            {g.isGroupAdmin && (
+              <button type="button" className="btn ghost small"
+                onClick={async () => { const name = window.prompt(t.renameGroup, g.name); if (name && name.trim().length >= 2) { await api('renameGroup', { groupId: g.id, name: name.trim() }, token).catch(() => {}); openGroup(g.id); loadList(); } }}>
+                ✏️ {t.renameGroup}
+              </button>
+            )}
+            {g.myRole === 'owner' && (
+              <button type="button" className="btn ghost small" style={{ color: 'var(--red)' }}
+                onClick={async () => { if (window.confirm(t.confirmDeleteGroup + '\n' + t.deleteGroupWarn)) { await api('deleteGroup', { groupId: g.id }, token).catch(() => {}); setSel(null); loadList(); } }}>
+                🗑️ {t.deleteGroup}
+              </button>
             )}
           </div>
         </div>
@@ -1002,6 +1050,11 @@ export function SettingsView({ token, user, setUser, reportConfig, setReportConf
   const [delErr, setDelErr] = useState('');
   const [problemMsg, setProblemMsg] = useState('');
   const [helpMsg, setHelpMsg] = useState('');
+  const [myMsgs, setMyMsgs] = useState([]);
+  const loadMyMsgs = useCallback(async () => {
+    try { const r = await api('listMySupport', {}, token); setMyMsgs(r.messages); } catch { /* */ }
+  }, [token]);
+  useEffect(() => { loadMyMsgs(); }, [loadMyMsgs]);
   const [customInterval, setCustomInterval] = useState('');
 
   const loadCodes = useCallback(async () => {
@@ -1065,7 +1118,7 @@ export function SettingsView({ token, user, setUser, reportConfig, setReportConf
   };
   const sendHelp = async (type, message, clear) => {
     setHelpMsg('');
-    try { await api('submitSupportMessage', { type, message }, token); clear(); setHelpMsg(t.sentOk); }
+    try { await api('submitSupportMessage', { type, message }, token); clear(); setHelpMsg(t.sentOk); loadMyMsgs(); }
     catch { setHelpMsg(t.errGeneric); }
   };
   const requestPerm = async () => {
@@ -1217,6 +1270,31 @@ export function SettingsView({ token, user, setUser, reportConfig, setReportConf
         <div style={{ marginTop: 8 }}>
           <button type="button" className="btn small" disabled={!problemMsg.trim()} onClick={() => sendHelp('problem', problemMsg, () => setProblemMsg(''))}>{t.send}</button>
         </div>
+        {myMsgs.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div className="small" style={{ fontWeight: 700 }}>{t.myMessages}</div>
+            <div style={{ marginTop: 6 }}>
+              {myMsgs.map((m) => (
+                <div key={m.id} className="mymsg">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span className="small">{new Date(m.createdAt).toLocaleString(lang === 'gu' ? 'gu-IN' : 'en-IN')}</span>
+                    <button type="button" className="btn ghost small" style={{ color: 'var(--red)' }}
+                      onClick={async () => { await api('deleteMySupportMessage', { id: m.id }, token).catch(() => {}); loadMyMsgs(); }}>
+                      🗑️ {t.deleteMsg}
+                    </button>
+                  </div>
+                  <div style={{ whiteSpace: 'pre-wrap', marginTop: 2 }}>{m.message}</div>
+                  {m.reply ? (
+                    <div className="replybox">
+                      <div className="rt">🙏 {t.adminReplyTag}</div>
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{m.reply}</div>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -1276,7 +1354,7 @@ function AdminUserReports({ token, userId, t, N, lang }) {
       {reports.map((r) => (
         <div key={r.date}>
           <button type="button" className="histrow" onClick={() => setOpen(open === r.date ? '' : r.date)}>
-            <span className={'pct' + (r.completion >= 100 ? ' full' : ' low')}>{N(r.completion)}%</span>
+            <span className={'pct' + (r.completion >= 80 ? ' full' : r.completion >= 40 ? ' mid' : ' low')}>{N(r.completion)}%</span>
             <span style={{ flex: 1 }}><b>{fmtDate(r.date, lang)}</b></span>
             <span className="small">{open === r.date ? t.hideDetail : t.fullDetail}</span>
           </button>
@@ -1390,6 +1468,7 @@ export function AdminView({ token, t, N, lang, appStatus, refreshStatus }) {
                 <span className={'chip ' + (m.type === 'problem' ? 'r' : 'g')}>{m.type === 'problem' ? t.supportProblem : t.supportContact}</span>{' '}
                 <b>{m.name}</b> <span className="small">({m.email}) · {new Date(m.createdAt).toLocaleString(lang === 'gu' ? 'gu-IN' : 'en-IN')}</span>
                 <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{m.message}</div>
+                <AdminReplyBox token={token} m={m} t={t} reload={load} />
               </div>
               {!m.readAt && <button type="button" className="btn ghost small" onClick={async () => { await api('adminMarkSupportRead', { messageId: m.id }, token).catch(() => {}); load(); }}>{t.markRead}</button>}
             </div>
