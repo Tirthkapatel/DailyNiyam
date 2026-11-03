@@ -344,6 +344,12 @@ function eventText(e, t) {
   if (e.type === 'join_approved') {
     return { title: t.evApprTitle, body: t.evApprBody.replace('{group}', e.groupName || '') };
   }
+  if (e.type === 'support_reply') {
+    return { title: t.evReplyTitle, body: e.body || '' };
+  }
+  if (e.type === 'report_submitted') {
+    return { title: t.evReportTitle, body: t.evReportBody.replace('{name}', e.actorName || '').replace('{group}', e.groupName || '') };
+  }
   return { title: t.appNameGu, body: e.groupName || '' };
 }
 

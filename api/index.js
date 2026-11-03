@@ -462,6 +462,12 @@ function reportRow(r, cfg) {
 }
 function validDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 
+/* Today's date in the users' timezone (Asia/Kolkata, UTC+5:30, no
+   DST) — the server itself runs on UTC. */
+function todayIST() {
+  return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 /* ---------------- actions ---------------- */
 const actions = {
   async getAppStatus() {
@@ -621,6 +627,25 @@ const actions = {
     } else {
       await db.execute({ sql: `INSERT INTO reports (user_id, date, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
         args: [u.id, a.date, JSON.stringify(data), now, now] });
+      // FIRST submission of TODAY's report: every group-mate hears
+      // about it (his rule). Edits inside the 5-minute window and
+      // back-dated fills do not re-notify. A notification failure must
+      // never fail the save itself.
+      if (a.date === todayIST()) {
+        try {
+          const memberships = await all(
+            `SELECT g.id, g.name FROM groups g
+             JOIN group_members gm ON gm.group_id = g.id WHERE gm.user_id = ?`, [u.id]);
+          for (const g of memberships) {
+            const mates = await all(
+              `SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ?`,
+              [g.id, u.id]);
+            for (const m of mates) {
+              await pushEvent(m.user_id, 'report_submitted', { id: g.id, name: g.name }, u.name);
+            }
+          }
+        } catch { /* best effort */ }
+      }
     }
     const r = await one(`SELECT * FROM reports WHERE user_id = ? AND date = ?`, [u.id, a.date]);
     return { report: reportRow(r, cfg) };
