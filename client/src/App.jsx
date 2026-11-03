@@ -301,6 +301,16 @@ function LangThemeRow({ lang, setLang, theme, setTheme, t }) {
   );
 }
 
+function eventText(e, t) {
+  if (e.type === 'join_request') {
+    return { title: t.evReqTitle, body: t.evReqBody.replace('{name}', e.actorName || '').replace('{group}', e.groupName || '') };
+  }
+  if (e.type === 'join_approved') {
+    return { title: t.evApprTitle, body: t.evApprBody.replace('{group}', e.groupName || '') };
+  }
+  return { title: t.appNameGu, body: e.groupName || '' };
+}
+
 function errText(e, t) {
   switch (e.code) {
     case 'invalid_credentials': return t.errInvalid;
@@ -741,7 +751,10 @@ export function GroupsView({ token, user, t, N, lang }) {
   const [pendingMine, setPendingMine] = useState([]);
   const [sel, setSel] = useState(null); // group detail
   const [gname, setGname] = useState('');
-  const [code, setCode] = useState(() => store.get('dn-join-code') || '');
+  const [code, setCode] = useState(() => {
+    const s = store.get('dn-join-code') || '';
+    return /^NIYAM-/i.test(s) ? s : ''; // token links join via the invitation page, not this box
+  });
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -775,10 +788,10 @@ export function GroupsView({ token, user, t, N, lang }) {
   };
   const act = async (action, args) => { try { await api(action, args, token); if (sel) openGroup(sel.group.id); loadList(); } catch { setErr(t.errGeneric); } };
 
-  const inviteText = (g) => t.shareInvite
+  const inviteText = (g, link) => t.shareInvite
     .replaceAll('{name}', user?.name || '')
     .replaceAll('{group}', g.name)
-    .replaceAll('{link}', `${window.location.origin}/join/${g.inviteCode}?by=${user?.id || ''}`)
+    .replaceAll('{link}', link)
     .replaceAll('{code}', g.inviteCode);
   const copyInvite = async () => {
     if (!sel) return;
@@ -786,7 +799,13 @@ export function GroupsView({ token, user, t, N, lang }) {
   };
   const shareInvite = async () => {
     if (!sel) return;
-    const text = inviteText(sel.group);
+    // Preferred: an opaque token link (the join code stays out of the URL).
+    let link = `${window.location.origin}/join/${sel.group.inviteCode}?by=${user?.id || ''}`;
+    try {
+      const r = await api('createInviteLink', { groupId: sel.group.id }, token);
+      if (r && r.token) link = `${window.location.origin}/join/${r.token}`;
+    } catch { /* offline — fall back to the code link */ }
+    const text = inviteText(sel.group, link);
     if (navigator.share) { try { await navigator.share({ text }); } catch { /* user closed the sheet */ } return; }
     try { await navigator.clipboard.writeText(text); setMsg(t.inviteCopied); } catch { setErr(t.errGeneric); }
   };
@@ -1409,10 +1428,10 @@ export default function App() {
 
   /* invite link: /join/NIYAM-XXXXXX?by=<id> (or ?join=) — stash + open the invitation page */
   useEffect(() => {
-    const m = window.location.pathname.match(/\/join\/(NIYAM-[A-Za-z0-9]+)/i)
-      || window.location.search.match(/[?&]join=(NIYAM-[A-Za-z0-9]+)/i);
+    const m = window.location.pathname.match(/\/join\/([A-Za-z0-9_-]{6,})/)
+      || window.location.search.match(/[?&]join=([A-Za-z0-9_-]{6,})/);
     if (m) {
-      const code = m[1].toUpperCase();
+      const code = /^NIYAM-/i.test(m[1]) ? m[1].toUpperCase() : m[1];
       const by = new URLSearchParams(window.location.search).get('by') || '';
       store.set('dn-join-code', code);
       if (by) store.set('dn-join-by', by);
@@ -1423,6 +1442,28 @@ export default function App() {
 
   /* arriving via an invite link lands on the Groups tab once logged in */
   useEffect(() => { if (user && store.get('dn-join-code')) setTab('groups'); }, [user]);
+
+  /* group events (join requests / approvals) → browser notifications
+     while the site is open; the server marks them seen once delivered */
+  useEffect(() => {
+    if (!user || !token) return;
+    let stop = false;
+    const poll = async () => {
+      try {
+        const r = await api('pollEvents', {}, token);
+        if (stop || !r.events) return;
+        for (const e of r.events) {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            const { title, body } = eventText(e, t);
+            try { new Notification(title, { body, icon: iconUrl }); } catch { /* */ }
+          }
+        }
+      } catch { /* offline */ }
+    };
+    poll();
+    const id = setInterval(poll, 45000);
+    return () => { stop = true; clearInterval(id); };
+  }, [user, token]); // eslint-disable-line
 
   /* session boot */
   useEffect(() => {

@@ -119,6 +119,23 @@ const SCHEMA = [
      smaran_enabled INTEGER NOT NULL DEFAULT 0,
      smaran_interval INTEGER NOT NULL DEFAULT 30
    )`,
+  `CREATE TABLE IF NOT EXISTS invite_links (
+     token TEXT PRIMARY KEY,
+     group_id INTEGER NOT NULL,
+     created_by INTEGER NOT NULL,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER NOT NULL,
+     type TEXT NOT NULL,
+     group_id INTEGER NOT NULL DEFAULT 0,
+     group_name TEXT NOT NULL DEFAULT '',
+     actor_name TEXT NOT NULL DEFAULT '',
+     created_at INTEGER NOT NULL,
+     seen_at INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, seen_at)`,
 ];
 
 let schemaReady = null;
@@ -164,6 +181,29 @@ function normalizeCode(c) { return String(c || '').trim().toUpperCase().replace(
 
 /* ---------------- db helpers ---------------- */
 async function one(sql, args = []) { const r = await db.execute({ sql, args }); return r.rows[0] || null; }
+
+/* Resolves an invite segment from a /join/<segment> link: either the plain
+   NIYAM-XXXXXX code or an opaque invite-link token (the code itself never
+   appears in a token link). Returns { group, viaToken } or null. */
+async function resolveInvite(segment) {
+  const raw = String(segment || '').trim();
+  if (/^NIYAM-[A-Z0-9]+$/i.test(raw)) {
+    const g = await one(`SELECT * FROM groups WHERE invite_code = ?`, [raw.toUpperCase()]);
+    return g ? { group: g, viaToken: null } : null;
+  }
+  if (!raw) return null;
+  const link = await one(`SELECT * FROM invite_links WHERE token = ?`, [raw]);
+  if (!link) return null;
+  const g = await one(`SELECT * FROM groups WHERE id = ?`, [link.group_id]);
+  return g ? { group: g, viaToken: link } : null;
+}
+
+/* In-app event (the clients poll these and turn them into notifications). */
+async function pushEvent(userId, type, group, actorName) {
+  await db.execute({ sql: `INSERT INTO events (user_id, type, group_id, group_name, actor_name, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', Date.now()] });
+}
 async function all(sql, args = []) { const r = await db.execute({ sql, args }); return r.rows; }
 
 async function createSession(userId) {
@@ -471,34 +511,66 @@ const actions = {
   // itself is the shared secret, so returning the group's name + size
   // to whoever holds the link is fine — no member data leaks.
   async groupPreview(a) {
-    const code = normalizeCode(a.code);
-    const g = await one(`SELECT g.id, g.name, g.admin_id, g.created_at, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
-      FROM groups g WHERE g.invite_code = ?`, [code]);
-    if (!g) throw { code: 'invalid_code' };
+    const r = await resolveInvite(a.code);
+    if (!r) throw { code: 'invalid_code' };
+    const g = r.group;
+    const cnt = await one(`SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?`, [g.id]);
     const admin = await one(`SELECT name FROM users WHERE id = ?`, [g.admin_id]);
-    // The inviter's name is shown ONLY when that user really is a member
-    // of this group — a hand-edited ?by= in the link cannot fake a name.
+    // The inviter is the token's creator (server-trusted) or a ?by= user —
+    // shown ONLY when that user really is a member of this group, so a
+    // hand-edited link cannot fake a name.
     let inviterName = null;
-    const by = Number(a.by || 0);
-    if (by > 0) {
+    const byId = r.viaToken ? r.viaToken.created_by : (Number(a.by || 0) || 0);
+    if (byId > 0) {
       const inv = await one(`SELECT u.name FROM group_members m JOIN users u ON u.id = m.user_id
-        WHERE m.group_id = ? AND m.user_id = ?`, [g.id, by]);
+        WHERE m.group_id = ? AND m.user_id = ?`, [g.id, byId]);
       if (inv) inviterName = inv.name;
     }
-    return { name: g.name, memberCount: Number(g.member_count),
+    return { name: g.name, memberCount: Number(cnt.c),
       adminName: admin ? admin.name : '', inviterName, createdAt: Number(g.created_at || 0) };
+  },
+
+  // Mints an opaque invite-link token for a group the caller belongs to.
+  // The shared link then carries this token instead of the join code.
+  async createInviteLink(a, token) {
+    const u = await requireUser(token);
+    const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(a.groupId) || 0]);
+    if (!g) throw { code: 'not_found' };
+    if (!(await one(`SELECT 1 AS x FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, u.id]))) {
+      throw { code: 'not_member' };
+    }
+    const tok = crypto.randomBytes(18).toString('base64url'); // 24 opaque chars
+    await db.execute({ sql: `INSERT INTO invite_links (token, group_id, created_by, created_at) VALUES (?, ?, ?, ?)`,
+      args: [tok, g.id, u.id, Date.now()] });
+    return { token: tok };
+  },
+
+  // Unseen events for the caller (join requests for group admins,
+  // approvals for members). Returned once, then marked seen.
+  async pollEvents(a, token) {
+    const u = await requireUser(token);
+    const rows = await all(`SELECT * FROM events WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at ASC LIMIT 20`, [u.id]);
+    if (rows.length) {
+      const ids = rows.map((r) => r.id);
+      await db.execute({ sql: `UPDATE events SET seen_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+        args: [Date.now(), ...ids] });
+    }
+    return { events: rows.map((r) => ({ id: r.id, type: r.type, groupId: r.group_id,
+      groupName: r.group_name, actorName: r.actor_name, createdAt: r.created_at })) };
   },
 
   async joinGroup(a, token) {
     const u = await requireUser(token);
-    const code = normalizeCode(a.code);
-    const g = await one(`SELECT * FROM groups WHERE invite_code = ?`, [code]);
-    if (!g) throw { code: 'invalid_code' };
+    const r = await resolveInvite(a.code);
+    if (!r) throw { code: 'invalid_code' };
+    const g = r.group;
     if (await one(`SELECT 1 AS x FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, u.id])) throw { code: 'already_member' };
     const pending = await one(`SELECT * FROM group_join_requests WHERE group_id = ? AND user_id = ? AND status = 'pending'`, [g.id, u.id]);
     if (pending) throw { code: 'already_requested' };
     await db.execute({ sql: `INSERT INTO group_join_requests (group_id, user_id, status, created_at) VALUES (?, ?, 'pending', ?)`,
       args: [g.id, u.id, Date.now()] });
+    // Notify the group admin (their app turns this event into a notification).
+    if (g.admin_id !== u.id) await pushEvent(g.admin_id, 'join_request', g, u.name);
     return { ok: true, groupName: g.name };
   },
 
@@ -563,6 +635,8 @@ const actions = {
     await db.execute({ sql: `UPDATE group_join_requests SET status = 'approved' WHERE id = ?`, args: [req.id] });
     await db.execute({ sql: `INSERT OR IGNORE INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`,
       args: [g.id, req.user_id, Date.now()] });
+    // Notify the approved user (their app shows the welcome notification).
+    await pushEvent(req.user_id, 'join_approved', g, u.name);
     return { ok: true };
   },
 
