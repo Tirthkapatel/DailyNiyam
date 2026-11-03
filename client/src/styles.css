@@ -303,3 +303,13 @@ h3.sec { margin: 0 0 8px; font-size: 17px; font-family: var(--font-display); fon
   .timebtn { min-width: 150px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* hidden report items (user-configured) + small-screen tightening */
+.fcard[hidden] { display: none !important; }
+@media (max-width: 380px) {
+  .row { flex-wrap: wrap; }
+  .herorow { flex-wrap: wrap; }
+  .btn.small { padding: 6px 10px; }
+  .detailgrid { gap: 6px 10px; }
+  .switchrow { gap: 8px; }
+}

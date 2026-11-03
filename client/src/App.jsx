@@ -222,7 +222,7 @@ export function Switch({ checked, onChange, disabled }) {
 }
 
 /* ---------- full read-only report detail (history + group feed) ---------- */
-export function DetailGrid({ data, t, N }) {
+export function DetailGrid({ data, t, N, customDefs }) {
   if (!data) return null;
   const chip = (v) => v
     ? <span className="chip g">{t.yes}</span>
@@ -246,6 +246,11 @@ export function DetailGrid({ data, t, N }) {
     [t.sleepTime, data.sleepTime || '—'],
     [t.vvrat, data.vvrat === 'yes' ? <span className="chip g">{t.yes}</span> : data.vvrat === 'no' ? <span className="chip r">{t.no}</span> : '—'],
   ];
+  for (const f of customDefs || []) {
+    const v = data[f.key];
+    if (v === undefined || v === null) continue;
+    rows.push([f.label, f.kind === 'toggle' ? chip(!!v) : f.kind === 'count' ? N(v || 0) : fmtDur(v || 0, t, N)]);
+  }
   if (data.vvratNote) rows.push([t.vvrat, data.vvratNote]);
   if (data.mantavya) rows.push([t.mantavya, data.mantavya]);
   return (
@@ -321,6 +326,7 @@ function errText(e, t) {
     case 'owner_immutable': return t.errOwnerImmutable;
     case 'already_member': return t.errAlreadyMember;
     case 'name_cooldown': return t.nameRule;
+    case 'too_many_fields': return t.errTooManyFields;
     default: return t.errGeneric;
   }
 }
@@ -435,17 +441,25 @@ const EMPTY_REPORT = {
   bhajanMinutes: 0, dhunMinutes: 0, pradakshina: 0, pradakshinaPlace: '', mansiPuja: 0,
   sleepTime: null, mantavya: '', vvrat: null, vvratNote: '',
 };
-export function completionOf(d) {
+export function completionOf(d, cfg) {
   if (!d) return 0;
-  let n = 0;
-  if (d.mangala) n++;
-  if (d.dhyan === 'done' || d.dhyan === 'partial') n++;
-  if (d.katha) n++; if (d.vachanamrut) n++; if (d.chesta) n++; if (d.mandir) n++;
-  if ((d.dandvat || 0) > 0) n++; if ((d.bhajanMinutes || 0) > 0) n++;
-  if ((d.dhunMinutes || 0) > 0) n++; if ((d.pradakshina || 0) > 0) n++;
-  if ((d.mansiPuja || 0) > 0) n++;
-  if (d.vvrat === 'yes') n++;
-  return Math.round((n / 12) * 100);
+  const hidden = new Set((cfg && cfg.hidden) || []);
+  let total = 0, n = 0;
+  const item = (key, done) => { if (hidden.has(key)) return; total++; if (done) n++; };
+  item('mangala', !!d.mangala);
+  item('dhyan', d.dhyan === 'done' || d.dhyan === 'partial');
+  item('katha', !!d.katha); item('vachanamrut', !!d.vachanamrut);
+  item('chesta', !!d.chesta); item('mandir', !!d.mandir);
+  item('dandvat', (d.dandvat || 0) > 0); item('bhajan', (d.bhajanMinutes || 0) > 0);
+  item('dhun', (d.dhunMinutes || 0) > 0); item('pradakshina', (d.pradakshina || 0) > 0);
+  item('mansiPuja', (d.mansiPuja || 0) > 0);
+  item('vvrat', d.vvrat === 'yes');
+  for (const f of (cfg && cfg.fields) || []) {
+    total++;
+    const v = d[f.key];
+    if (f.kind === 'toggle' ? !!v : (Number(v) || 0) > 0) n++;
+  }
+  return total ? Math.round((n / total) * 100) : 0;
 }
 
 function TimeField({ label, value, onChange, t, N, defaultAp, disabled }) {
@@ -481,13 +495,14 @@ function Ring({ pct, N }) {
   );
 }
 
-export function ReportForm({ token, t, N, lang, date, setDate, onSaved }) {
+export function ReportForm({ token, t, N, lang, date, setDate, onSaved, reportConfig }) {
   const [data, setData] = useState(EMPTY_REPORT);
   const [existing, setExisting] = useState(null); // server report row wrapper
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
-  const pct = completionOf(data);
+  const pct = completionOf(data, reportConfig);
+  const hidden = (reportConfig && reportConfig.hidden) || [];
   const locked = !!existing && !existing.editable;
 
   const load = useCallback(async () => {
@@ -554,43 +569,52 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved }) {
 
       <fieldset className="fcards" disabled={locked}>
           <TimeField label={t.wakeTime} value={data.wakeTime} onChange={(v) => set('wakeTime', v)} t={t} N={N} defaultAp="AM" disabled={locked} />
-          <div className="fcard"><div className="lab">{t.mangala}</div>
+          <div className="fcard" hidden={hidden.includes('mangala')}><div className="lab">{t.mangala}</div>
             <Seg value={data.mangala} options={toggleOpts} onChange={(v) => set('mangala', v)} disabled={locked} /></div>
-          <div className="fcard stack"><div className="lab">{t.dhyan}</div>
+          <div className="fcard stack" hidden={hidden.includes('dhyan')}><div className="lab">{t.dhyan}</div>
             <Seg value={data.dhyan} options={triOpts} onChange={(v) => set('dhyan', v)} disabled={locked} />
           {data.dhyan === 'partial' && (
             <div className="frow"><div className="lab"><small>{t.ketliMin}</small></div>
               <Stepper value={data.dhyanMinutes} onChange={(v) => set('dhyanMinutes', v)} disabled={locked} /></div>
           )}
           </div>
-          <div className="fcard"><div className="lab">{t.katha}</div>
+          <div className="fcard" hidden={hidden.includes('katha')}><div className="lab">{t.katha}</div>
             <Seg value={data.katha} options={toggleOpts} onChange={(v) => set('katha', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.vachanamrut}</div>
+          <div className="fcard" hidden={hidden.includes('vachanamrut')}><div className="lab">{t.vachanamrut}</div>
             <Seg value={data.vachanamrut} options={toggleOpts} onChange={(v) => set('vachanamrut', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.chesta}</div>
+          <div className="fcard" hidden={hidden.includes('chesta')}><div className="lab">{t.chesta}</div>
             <Seg value={data.chesta} options={toggleOpts} onChange={(v) => set('chesta', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.mandir}</div>
+          <div className="fcard" hidden={hidden.includes('mandir')}><div className="lab">{t.mandir}</div>
             <Seg value={data.mandir} options={toggleOpts} onChange={(v) => set('mandir', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.dandvat}<small>{t.ketla}</small></div>
+          <div className="fcard" hidden={hidden.includes('dandvat')}><div className="lab">{t.dandvat}<small>{t.ketla}</small></div>
             <Stepper value={data.dandvat} onChange={(v) => set('dandvat', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.bhajan}<small>{t.total}: {fmtDur(data.bhajanMinutes, t, N)}</small></div>
+          <div className="fcard" hidden={hidden.includes('bhajan')}><div className="lab">{t.bhajan}<small>{t.total}: {fmtDur(data.bhajanMinutes, t, N)}</small></div>
             <DurationStepper minutes={data.bhajanMinutes} onChange={(v) => set('bhajanMinutes', v)} t={t} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.dhun}<small>{t.total}: {fmtDur(data.dhunMinutes, t, N)}</small></div>
+          <div className="fcard" hidden={hidden.includes('dhun')}><div className="lab">{t.dhun}<small>{t.total}: {fmtDur(data.dhunMinutes, t, N)}</small></div>
             <DurationStepper minutes={data.dhunMinutes} onChange={(v) => set('dhunMinutes', v)} t={t} disabled={locked} /></div>
-          <div className="fcard stack"><div className="frow"><div className="lab">{t.pradakshina}<small>{t.ketli}</small></div>
+          <div className="fcard stack" hidden={hidden.includes('pradakshina')}><div className="frow"><div className="lab">{t.pradakshina}<small>{t.ketli}</small></div>
             <Stepper value={data.pradakshina} onChange={(v) => set('pradakshina', v)} disabled={locked} /></div>
           <div className="frow"><div className="lab"><small>{t.whereDid}</small></div>
             <input className="textin" style={{ maxWidth: 260 }} value={data.pradakshinaPlace} placeholder={t.placePlaceholder}
               onChange={(e) => set('pradakshinaPlace', e.target.value)} disabled={locked} /></div>
           </div>
-          <div className="fcard"><div className="lab">{t.mansiPuja}<small>{t.ketli}</small></div>
+          <div className="fcard" hidden={hidden.includes('mansiPuja')}><div className="lab">{t.mansiPuja}<small>{t.ketli}</small></div>
             <Stepper value={data.mansiPuja} max={5} onChange={(v) => set('mansiPuja', v)} disabled={locked} />
             <span className="unit">{N(data.mansiPuja || 0)} / {N(5)}</span></div>
+          {((reportConfig && reportConfig.fields) || []).map((f) => (
+            <div className="fcard" key={f.key}><div className="lab">{f.label}</div>
+              {f.kind === 'toggle'
+                ? <Seg value={!!data[f.key]} options={toggleOpts} onChange={(v) => set(f.key, v)} disabled={locked} />
+                : f.kind === 'count'
+                  ? <Stepper value={data[f.key] || 0} onChange={(v) => set(f.key, v)} disabled={locked} />
+                  : <DurationStepper minutes={data[f.key] || 0} onChange={(v) => set(f.key, v)} t={t} disabled={locked} />}
+            </div>
+          ))}
           <TimeField label={t.sleepTime} value={data.sleepTime} onChange={(v) => set('sleepTime', v)} t={t} N={N} defaultAp="PM" disabled={locked} />
           <div className="fcard stack wide"><div className="lab">{t.mantavya}</div>
             <textarea className="textin" value={data.mantavya} placeholder={t.mantavyaPlaceholder}
               onChange={(e) => set('mantavya', e.target.value)} disabled={locked} /></div>
-          <div className="fcard stack"><div className="frow"><div className="lab">{t.vvrat}</div>
+          <div className="fcard stack" hidden={hidden.includes('vvrat')}><div className="frow"><div className="lab">{t.vvrat}</div>
             <Seg value={data.vvrat} options={[{ v: 'yes', label: t.yes }, { v: 'no', label: t.no, cls: 'no' }]}
               onChange={(v) => set('vvrat', v)} disabled={locked} /></div>
           <div className="frow"><div className="lab"><small>{t.vvratNote}</small></div>
@@ -719,7 +743,7 @@ export function HistoryView({ reports, t, N, lang, onOpenDate }) {
           </button>
           {open === r.date && (
             <div style={{ padding: '0 2px 12px' }}>
-              <DetailGrid data={r.data} t={t} N={N} />
+              <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} />
               <div style={{ marginTop: 10 }}>
                 <button type="button" className="btn ghost small" onClick={() => onOpenDate(r.date)}>{t.view} →</button>
               </div>
@@ -744,7 +768,7 @@ function MemberReportCard({ entry, t, N, lang }) {
         </span>
         <span className="small">{open ? t.hideDetail : t.fullDetail}</span>
       </button>
-      {open && <DetailGrid data={entry.data} t={t} N={N} />}
+      {open && <DetailGrid data={entry.data} t={t} N={N} customDefs={entry.custom} />}
     </div>
   );
 }
@@ -956,7 +980,7 @@ export function GroupsView({ token, user, t, N, lang }) {
 }
 
 /* ================= SETTINGS ================= */
-export function SettingsView({ token, user, setUser, t, N, lang, setLang, theme, setTheme, settings, saveSettings, fireAlert, onLogout }) {
+export function SettingsView({ token, user, setUser, reportConfig, setReportConfig, loadReports, t, N, lang, setLang, theme, setTheme, settings, saveSettings, fireAlert, onLogout }) {
   const [perm, setPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   const [timeOpen, setTimeOpen] = useState(false);
   const [curPw, setCurPw] = useState('');
@@ -968,6 +992,9 @@ export function SettingsView({ token, user, setUser, t, N, lang, setLang, theme,
   const [regenPw, setRegenPw] = useState('');
   const [contactMsg, setContactMsg] = useState('');
   const [nameIn, setNameIn] = useState('');
+  const [newField, setNewField] = useState('');
+  const [newKind, setNewKind] = useState('toggle');
+  const [itemsErr, setItemsErr] = useState('');
   const [profMsg, setProfMsg] = useState('');
   const [profErr, setProfErr] = useState('');
   const [delPw, setDelPw] = useState('');
@@ -982,6 +1009,22 @@ export function SettingsView({ token, user, setUser, t, N, lang, setLang, theme,
   }, [token]);
   useEffect(() => { loadCodes(); }, [loadCodes]);
 
+  const toggleItem = async (key, on) => {
+    setItemsErr('');
+    const next = on ? reportConfig.hidden.filter((k) => k !== key) : [...reportConfig.hidden, key];
+    try { const r = await api('setHiddenItems', { keys: next }, token); setReportConfig(r.config); if (loadReports) loadReports(); }
+    catch (e) { setItemsErr(errText(e, t)); }
+  };
+  const addField = async () => {
+    setItemsErr('');
+    try { const r = await api('addCustomField', { label: newField.trim(), kind: newKind }, token); setReportConfig(r.config); setNewField(''); if (loadReports) loadReports(); }
+    catch (e) { setItemsErr(errText(e, t)); }
+  };
+  const delField = async (id) => {
+    setItemsErr('');
+    try { const r = await api('deleteCustomField', { id }, token); setReportConfig(r.config); if (loadReports) loadReports(); }
+    catch (e) { setItemsErr(errText(e, t)); }
+  };
   const doChangeName = async () => {
     setProfErr(''); setProfMsg('');
     try {
@@ -1100,6 +1143,36 @@ export function SettingsView({ token, user, setUser, t, N, lang, setLang, theme,
       </div>
 
       <div className="card">
+        <h3 className="sec">🪔 {t.reportItems}</h3>
+        <p className="small">{t.reportItemsNote}</p>
+        {itemsErr ? <div className="err">{itemsErr}</div> : null}
+        {[['mangala', t.mangala], ['dhyan', t.dhyan], ['katha', t.katha], ['vachanamrut', t.vachanamrut],
+          ['chesta', t.chesta], ['mandir', t.mandir], ['dandvat', t.dandvat], ['bhajan', t.bhajan],
+          ['dhun', t.dhun], ['pradakshina', t.pradakshina], ['mansiPuja', t.mansiPuja], ['vvrat', t.vvrat]
+        ].map(([key, label]) => (
+          <div className="switchrow" key={key}><span>{label}</span>
+            <input type="checkbox" checked={!reportConfig.hidden.includes(key)}
+              onChange={(e) => toggleItem(key, e.target.checked)} />
+          </div>
+        ))}
+        {(reportConfig.fields || []).map((f) => (
+          <div className="row" key={f.key}>
+            <div className="lab">{f.label}<small>{f.kind === 'count' ? t.kindCount : f.kind === 'duration' ? t.kindDuration : t.kindToggle}</small></div>
+            <button type="button" className="btn ghost small" onClick={() => delField(f.id)}>✕</button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <input className="textin" style={{ flex: 1, minWidth: 160 }} placeholder={t.fieldNamePh} value={newField} onChange={(e) => setNewField(e.target.value)} />
+          <select className="textin" value={newKind} onChange={(e) => setNewKind(e.target.value)}>
+            <option value="toggle">{t.kindToggle}</option>
+            <option value="count">{t.kindCount}</option>
+            <option value="duration">{t.kindDuration}</option>
+          </select>
+          <button type="button" className="btn small" disabled={newField.trim().length < 2} onClick={addField}>{t.addFieldBtn}</button>
+        </div>
+      </div>
+
+      <div className="card">
         <h3 className="sec">🔐 {t.security}</h3>
         {secErr ? <div className="err">{secErr}</div> : null}
         {secMsg ? <div className="okmsg">{secMsg}</div> : null}
@@ -1207,7 +1280,7 @@ function AdminUserReports({ token, userId, t, N, lang }) {
             <span style={{ flex: 1 }}><b>{fmtDate(r.date, lang)}</b></span>
             <span className="small">{open === r.date ? t.hideDetail : t.fullDetail}</span>
           </button>
-          {open === r.date && <DetailGrid data={r.data} t={t} N={N} />}
+          {open === r.date && <DetailGrid data={r.data} t={t} N={N} customDefs={r.custom} />}
         </div>
       ))}
     </div>
@@ -1498,6 +1571,7 @@ export default function App() {
   const [date, setDate] = useState(isoLocal());
   const [reports, setReports] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [reportConfig, setReportConfig] = useState({ hidden: [], fields: [] });
   const [appStatus, setAppStatus] = useState(null);
   const [alertBox, setAlertBox] = useState(null); // { title, body }
   const [updDismissed, setUpdDismissed] = useState(() => store.sget('dn-upd-dismissed') || '');
@@ -1586,6 +1660,12 @@ export default function App() {
     try { const r = await api('getUserSettings', {}, token); setSettings(r.settings); } catch { /* */ }
   }, [token, user]);
   useEffect(() => { loadSettings(); }, [loadSettings]);
+
+  const loadReportConfig = useCallback(async () => {
+    if (!token || !user) return;
+    try { const r = await api('getReportConfig', {}, token); setReportConfig(r.config); } catch { /* */ }
+  }, [token, user]);
+  useEffect(() => { loadReportConfig(); }, [loadReportConfig]);
 
   const saveSettings = useCallback(async (next) => {
     setSettings(next);
@@ -1731,7 +1811,7 @@ export default function App() {
 
       <main className="main" key={tab}>
         {tab === 'report' && (
-          <ReportForm token={token} t={t} N={N} lang={lang} date={date} setDate={setDate} onSaved={loadReports} />
+          <ReportForm token={token} t={t} N={N} lang={lang} date={date} setDate={setDate} onSaved={loadReports} reportConfig={reportConfig} />
         )}
         {tab === 'progress' && <ProgressView reports={reports} t={t} N={N} lang={lang} />}
         {tab === 'history' && (
@@ -1740,7 +1820,7 @@ export default function App() {
         )}
         {tab === 'groups' && <GroupsView token={token} user={user} t={t} N={N} lang={lang} />}
         {tab === 'settings' && (
-          <SettingsView token={token} user={user} setUser={setUser} t={t} N={N} lang={lang} setLang={setLang}
+          <SettingsView token={token} user={user} setUser={setUser} reportConfig={reportConfig} setReportConfig={setReportConfig} loadReports={loadReports} t={t} N={N} lang={lang} setLang={setLang}
             theme={theme} setTheme={setTheme} settings={settings} saveSettings={saveSettings}
             fireAlert={fireAlert} onLogout={onLogout} />
         )}

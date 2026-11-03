@@ -120,8 +120,17 @@ const SCHEMA = [
      reminder_enabled INTEGER NOT NULL DEFAULT 1,
      reminder_time TEXT NOT NULL DEFAULT '21:00',
      smaran_enabled INTEGER NOT NULL DEFAULT 0,
-     smaran_interval INTEGER NOT NULL DEFAULT 30
+     smaran_interval INTEGER NOT NULL DEFAULT 30,
+     hidden_items TEXT NOT NULL DEFAULT '[]'
    )`,
+  `CREATE TABLE IF NOT EXISTS custom_fields (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER NOT NULL,
+     label TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_cf_user ON custom_fields(user_id)`,
   `CREATE TABLE IF NOT EXISTS invite_links (
      token TEXT PRIMARY KEY,
      group_id INTEGER NOT NULL,
@@ -153,6 +162,7 @@ function ensureSchema() {
         `ALTER TABLE users ADD COLUMN name_changed_at INTEGER`,
         `ALTER TABLE users ADD COLUMN deleted_at INTEGER`,
         `ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`,
+        `ALTER TABLE user_settings ADD COLUMN hidden_items TEXT NOT NULL DEFAULT '[]'`,
       ]) { try { await db.execute(s); } catch { /* already there */ } }
       // The group creator is the 'owner' member (immutable role).
       await db.execute(`UPDATE group_members SET role = 'owner'
@@ -188,6 +198,7 @@ async function purgeUser(uid) {
     }
   }
   await db.execute({ sql: `DELETE FROM reports WHERE user_id = ?`, args: [uid] });
+  await db.execute({ sql: `DELETE FROM custom_fields WHERE user_id = ?`, args: [uid] });
   await db.execute({ sql: `DELETE FROM group_members WHERE user_id = ?`, args: [uid] });
   await db.execute({ sql: `DELETE FROM group_join_requests WHERE user_id = ?`, args: [uid] });
   await db.execute({ sql: `DELETE FROM backup_codes WHERE user_id = ?`, args: [uid] });
@@ -347,28 +358,60 @@ async function issueBackupCodes(userId) {
 }
 
 /* reports */
-function computeCompletion(d) {
-  if (!d) return 0;
-  let n = 0;
-  if (d.mangala) n++;
-  if (d.dhyan === 'done' || d.dhyan === 'partial') n++;
-  if (d.katha) n++;
-  if (d.vachanamrut) n++;
-  if (d.chesta) n++;
-  if (d.mandir) n++;
-  if ((d.dandvat || 0) > 0) n++;
-  if ((d.bhajanMinutes || 0) > 0) n++;
-  if ((d.dhunMinutes || 0) > 0) n++;
-  if ((d.pradakshina || 0) > 0) n++;
-  if ((d.mansiPuja || 0) > 0) n++;
-  if (d.vvrat === 'yes') n++;
-  return Math.round((n / 12) * 100);
+/* The 12 built-in counted items, by hide-key. A user may hide items
+   they do not follow (Settings → report items); hidden items leave
+   both the form and the completion denominator. */
+const BUILTIN_COUNTED = [
+  ['mangala', (d) => !!d.mangala],
+  ['dhyan', (d) => d.dhyan === 'done' || d.dhyan === 'partial'],
+  ['katha', (d) => !!d.katha],
+  ['vachanamrut', (d) => !!d.vachanamrut],
+  ['chesta', (d) => !!d.chesta],
+  ['mandir', (d) => !!d.mandir],
+  ['dandvat', (d) => (d.dandvat || 0) > 0],
+  ['bhajan', (d) => (d.bhajanMinutes || 0) > 0],
+  ['dhun', (d) => (d.dhunMinutes || 0) > 0],
+  ['pradakshina', (d) => (d.pradakshina || 0) > 0],
+  ['mansiPuja', (d) => (d.mansiPuja || 0) > 0],
+  ['vvrat', (d) => d.vvrat === 'yes'],
+];
+const HIDEABLE = BUILTIN_COUNTED.map(([k]) => k);
+
+/* A user's report configuration: hidden built-ins + their own custom
+   niyam fields (kind: toggle | count | duration-minutes). */
+async function reportConfig(userId) {
+  const s = await one(`SELECT hidden_items FROM user_settings WHERE user_id = ?`, [userId]);
+  let hidden = [];
+  try { hidden = JSON.parse(s?.hidden_items || '[]'); } catch { hidden = []; }
+  if (!Array.isArray(hidden)) hidden = [];
+  const rows = await all(`SELECT * FROM custom_fields WHERE user_id = ? ORDER BY id ASC`, [userId]);
+  return {
+    hidden: hidden.filter((k) => HIDEABLE.includes(k)),
+    fields: rows.map((r) => ({ id: r.id, key: 'c' + r.id, label: r.label, kind: r.kind })),
+  };
 }
-function cleanReportData(a) {
+
+function computeCompletion(d, cfg) {
+  if (!d) return 0;
+  const hidden = new Set(cfg?.hidden || []);
+  let total = 0, n = 0;
+  for (const [key, test] of BUILTIN_COUNTED) {
+    if (hidden.has(key)) continue;
+    total++;
+    if (test(d)) n++;
+  }
+  for (const f of cfg?.fields || []) {
+    total++;
+    const v = d[f.key];
+    if (f.kind === 'toggle' ? !!v : (Number(v) || 0) > 0) n++;
+  }
+  return total ? Math.round((n / total) * 100) : 0;
+}
+function cleanReportData(a, fields = []) {
   const t = (v) => (v === 'done' || v === 'partial' || v === 'no' ? v : null);
   const nonNegInt = (v) => { const n = Math.floor(Number(v) || 0); return n < 0 ? 0 : n; };
   const timeStr = (v) => (typeof v === 'string' && /^(0?[1-9]|1[0-2]):[0-5][0-9]\s?(AM|PM)$/i.test(v.trim()) ? v.trim() : null);
-  return {
+  const out = {
     wakeTime: timeStr(a.wakeTime),
     mangala: !!a.mangala,
     dhyan: t(a.dhyan),
@@ -388,12 +431,20 @@ function cleanReportData(a) {
     vvrat: a.vvrat === 'yes' || a.vvrat === 'no' ? a.vvrat : null,
     vvratNote: String(a.vvratNote || '').slice(0, 500),
   };
+  // The saver's own custom fields ride along under their c<id> keys.
+  for (const f of fields) {
+    if (f.kind === 'toggle') out[f.key] = !!a[f.key];
+    else if (f.kind === 'count') out[f.key] = Math.min(99999, nonNegInt(a[f.key]));
+    else out[f.key] = Math.min(1440, nonNegInt(a[f.key])); // duration, minutes
+  }
+  return out;
 }
-function reportRow(r) {
+function reportRow(r, cfg) {
   const data = JSON.parse(r.data);
   delete data.mangalaAarti; // legacy field (same niyam as mangala) — tolerated on read, never returned/counted
   return {
-    date: r.date, data, completion: computeCompletion(data),
+    date: r.date, data, completion: computeCompletion(data, cfg),
+    custom: cfg?.fields || [],
     createdAt: r.created_at, updatedAt: r.updated_at,
     editDeadline: r.created_at + EDIT_WINDOW_MS,
     editable: Date.now() < r.created_at + EDIT_WINDOW_MS,
@@ -549,7 +600,8 @@ const actions = {
   async saveReport(a, token) {
     const u = await requireUser(token);
     if (!validDate(a.date)) throw { code: 'invalid_input' };
-    const data = cleanReportData(a);
+    const cfg = await reportConfig(u.id);
+    const data = cleanReportData(a, cfg.fields);
     const now = Date.now();
     const existing = await one(`SELECT * FROM reports WHERE user_id = ? AND date = ?`, [u.id, a.date]);
     if (existing) {
@@ -561,20 +613,56 @@ const actions = {
         args: [u.id, a.date, JSON.stringify(data), now, now] });
     }
     const r = await one(`SELECT * FROM reports WHERE user_id = ? AND date = ?`, [u.id, a.date]);
-    return { report: reportRow(r) };
+    return { report: reportRow(r, cfg) };
   },
 
   async getReport(a, token) {
     const u = await requireUser(token);
     if (!validDate(a.date)) throw { code: 'invalid_input' };
     const r = await one(`SELECT * FROM reports WHERE user_id = ? AND date = ?`, [u.id, a.date]);
-    return { report: r ? reportRow(r) : null };
+    const cfg = await reportConfig(u.id);
+    return { report: r ? reportRow(r, cfg) : null };
   },
 
   async listReports(a, token) {
     const u = await requireUser(token);
+    const cfg = await reportConfig(u.id);
     const rows = await all(`SELECT * FROM reports WHERE user_id = ? ORDER BY date ASC`, [u.id]);
-    return { reports: rows.map(reportRow) };
+    return { reports: rows.map((r) => reportRow(r, cfg)) };
+  },
+
+  /* ---- report configuration: hidden built-ins + custom fields ---- */
+  async getReportConfig(a, token) {
+    const u = await requireUser(token);
+    return { config: await reportConfig(u.id) };
+  },
+
+  async setHiddenItems(a, token) {
+    const u = await requireUser(token);
+    const keys = Array.isArray(a.keys) ? [...new Set(a.keys.filter((k) => HIDEABLE.includes(k)))] : [];
+    await db.execute({ sql: `INSERT INTO user_settings (user_id, hidden_items) VALUES (?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET hidden_items = excluded.hidden_items`,
+      args: [u.id, JSON.stringify(keys)] });
+    return { config: await reportConfig(u.id) };
+  },
+
+  async addCustomField(a, token) {
+    const u = await requireUser(token);
+    const label = String(a.label || '').trim().replace(/\s+/g, ' ');
+    const kind = ['toggle', 'count', 'duration'].includes(a.kind) ? a.kind : null;
+    if (label.length < 2 || label.length > 40 || !kind) throw { code: 'invalid_input' };
+    const c = await one(`SELECT COUNT(*) AS c FROM custom_fields WHERE user_id = ?`, [u.id]);
+    if (Number(c.c) >= 10) throw { code: 'too_many_fields' };
+    await db.execute({ sql: `INSERT INTO custom_fields (user_id, label, kind, created_at) VALUES (?, ?, ?, ?)`,
+      args: [u.id, label, kind, Date.now()] });
+    return { config: await reportConfig(u.id) };
+  },
+
+  async deleteCustomField(a, token) {
+    const u = await requireUser(token);
+    await db.execute({ sql: `DELETE FROM custom_fields WHERE id = ? AND user_id = ?`,
+      args: [Number(a.id) || 0, u.id] });
+    return { config: await reportConfig(u.id) };
   },
 
   /* ---- user settings (reminder + smaran bell) ---- */
@@ -738,9 +826,11 @@ const actions = {
       WHERE r.user_id IN (SELECT user_id FROM group_members WHERE group_id = ?) AND r.date IN (${dates.map(() => '?').join(',')})
       ORDER BY r.date DESC`, [g.id, ...dates]);
     const feed = {};
+    const cfgByUser = new Map();
     for (const r of feedRows) {
+      if (!cfgByUser.has(r.user_id)) cfgByUser.set(r.user_id, await reportConfig(r.user_id));
       if (!feed[r.date]) feed[r.date] = [];
-      feed[r.date].push({ userId: r.user_id, userName: r.uname, ...reportRow(r) });
+      feed[r.date].push({ userId: r.user_id, userName: r.uname, ...reportRow(r, cfgByUser.get(r.user_id)) });
     }
     let requests = [];
     if (isGroupAdmin) {
@@ -869,8 +959,9 @@ const actions = {
     await requireAdmin(token);
     const target = await one(`SELECT * FROM users WHERE id = ?`, [Number(a.userId) || 0]);
     if (!target) throw { code: 'not_found' };
+    const cfg = await reportConfig(target.id);
     const rows = await all(`SELECT * FROM reports WHERE user_id = ? ORDER BY date DESC`, [target.id]);
-    return { user: publicUser(target), reports: rows.map(reportRow) };
+    return { user: publicUser(target), reports: rows.map((r) => reportRow(r, cfg)) };
   },
 
   async adminSetUserPassword(a, token) {
