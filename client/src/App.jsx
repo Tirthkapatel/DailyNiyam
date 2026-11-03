@@ -233,7 +233,6 @@ export function DetailGrid({ data, t, N }) {
   const rows = [
     [t.wakeTime, data.wakeTime || '—'],
     [t.mangala, chip(data.mangala)],
-    [t.mangalaAarti, chip(data.mangalaAarti)],
     [t.dhyan, dhyanChip],
     [t.katha, chip(data.katha)],
     [t.vachanamrut, chip(data.vachanamrut)],
@@ -407,7 +406,7 @@ export function AuthScreen({ t, lang, setLang, theme, setTheme, onAuthed }) {
 
 /* ================= REPORT FORM ================= */
 const EMPTY_REPORT = {
-  wakeTime: null, mangala: false, mangalaAarti: false, dhyan: null, dhyanMinutes: 0,
+  wakeTime: null, mangala: false, dhyan: null, dhyanMinutes: 0,
   katha: false, vachanamrut: false, chesta: false, mandir: false, dandvat: 0,
   bhajanMinutes: 0, dhunMinutes: 0, pradakshina: 0, pradakshinaPlace: '', mansiPuja: 0,
   sleepTime: null, mantavya: '', vvrat: null, vvratNote: '',
@@ -415,14 +414,14 @@ const EMPTY_REPORT = {
 export function completionOf(d) {
   if (!d) return 0;
   let n = 0;
-  if (d.mangala) n++; if (d.mangalaAarti) n++;
+  if (d.mangala) n++;
   if (d.dhyan === 'done' || d.dhyan === 'partial') n++;
   if (d.katha) n++; if (d.vachanamrut) n++; if (d.chesta) n++; if (d.mandir) n++;
   if ((d.dandvat || 0) > 0) n++; if ((d.bhajanMinutes || 0) > 0) n++;
   if ((d.dhunMinutes || 0) > 0) n++; if ((d.pradakshina || 0) > 0) n++;
   if ((d.mansiPuja || 0) > 0) n++;
   if (d.vvrat === 'yes') n++;
-  return Math.round((n / 13) * 100);
+  return Math.round((n / 12) * 100);
 }
 
 function TimeField({ label, value, onChange, t, N, defaultAp, disabled }) {
@@ -533,8 +532,6 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved }) {
           <TimeField label={t.wakeTime} value={data.wakeTime} onChange={(v) => set('wakeTime', v)} t={t} N={N} defaultAp="AM" disabled={locked} />
           <div className="fcard"><div className="lab">{t.mangala}</div>
             <Seg value={data.mangala} options={toggleOpts} onChange={(v) => set('mangala', v)} disabled={locked} /></div>
-          <div className="fcard"><div className="lab">{t.mangalaAarti}</div>
-            <Seg value={data.mangalaAarti} options={toggleOpts} onChange={(v) => set('mangalaAarti', v)} disabled={locked} /></div>
           <div className="fcard stack"><div className="lab">{t.dhyan}</div>
             <Seg value={data.dhyan} options={triOpts} onChange={(v) => set('dhyan', v)} disabled={locked} />
           {data.dhyan === 'partial' && (

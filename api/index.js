@@ -231,7 +231,6 @@ function computeCompletion(d) {
   if (!d) return 0;
   let n = 0;
   if (d.mangala) n++;
-  if (d.mangalaAarti) n++;
   if (d.dhyan === 'done' || d.dhyan === 'partial') n++;
   if (d.katha) n++;
   if (d.vachanamrut) n++;
@@ -243,7 +242,7 @@ function computeCompletion(d) {
   if ((d.pradakshina || 0) > 0) n++;
   if ((d.mansiPuja || 0) > 0) n++;
   if (d.vvrat === 'yes') n++;
-  return Math.round((n / 13) * 100);
+  return Math.round((n / 12) * 100);
 }
 function cleanReportData(a) {
   const t = (v) => (v === 'done' || v === 'partial' || v === 'no' ? v : null);
@@ -252,7 +251,6 @@ function cleanReportData(a) {
   return {
     wakeTime: timeStr(a.wakeTime),
     mangala: !!a.mangala,
-    mangalaAarti: !!a.mangalaAarti,
     dhyan: t(a.dhyan),
     dhyanMinutes: a.dhyan === 'partial' ? nonNegInt(a.dhyanMinutes) : 0,
     katha: !!a.katha,
@@ -273,6 +271,7 @@ function cleanReportData(a) {
 }
 function reportRow(r) {
   const data = JSON.parse(r.data);
+  delete data.mangalaAarti; // legacy field (same niyam as mangala) — tolerated on read, never returned/counted
   return {
     date: r.date, data, completion: computeCompletion(data),
     createdAt: r.created_at, updatedAt: r.updated_at,

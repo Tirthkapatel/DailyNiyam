@@ -19,7 +19,7 @@ export const gu = {
   codesWarn: 'આ codes ફક્ત એક જ વાર દેખાશે — સાચવીને રાખો. પાસવર્ડ ભૂલો તો આમાંથી કોઈ એક code થી નવો પાસવર્ડ બનશે. દરેક code એક જ વાર ચાલશે.',
   copyAll: 'બધા Copy કરો', copied: 'Copy થઈ ગયા ✓', codesSavedBtn: 'મેં સાચવી લીધા છે — આગળ વધો',
   // report
-  date: 'તારીખ', wakeTime: 'ઉઠવાનો સમય', mangala: 'મંગળા', mangalaAarti: 'મંગળા આરતી',
+  date: 'તારીખ', wakeTime: 'ઉઠવાનો સમય', mangala: 'મંગળા',
   dhyan: 'ધ્યાન શિબિર', katha: 'કથા', vachanamrut: 'વચનામૃત', chesta: 'ચેષ્ટા', mandir: 'મંદિર',
   dandvat: 'દંડવત', bhajan: 'ભજન', dhun: 'ધૂન (નામ સ્મરણ)', pradakshina: 'પ્રદક્ષિણા', mansiPuja: 'માનસી પૂજા',
   sleepTime: 'રાત્રે સૂવાનો સમય', mantavya: 'મંતવ્ય', vvrat: 'V-વ્રત',
@@ -95,7 +95,7 @@ export const en = {
   codesTitle: 'Your backup codes',
   codesWarn: 'These codes will be shown only once — save them safely. If you forget your password, any one code can set a new one. Each code works once.',
   copyAll: 'Copy all', copied: 'Copied ✓', codesSavedBtn: 'I saved them — continue',
-  date: 'Date', wakeTime: 'Wake-up time', mangala: 'Mangala', mangalaAarti: 'Mangala Aarti',
+  date: 'Date', wakeTime: 'Wake-up time', mangala: 'Mangala',
   dhyan: 'Dhyan Shibir', katha: 'Katha', vachanamrut: 'Vachanamrut', chesta: 'Cheshta', mandir: 'Mandir',
   dandvat: 'Dandvat', bhajan: 'Bhajan', dhun: 'Dhun (Naam Smaran)', pradakshina: 'Pradakshina', mansiPuja: 'Mansi Puja',
   sleepTime: 'Sleep time', mantavya: 'Mantavya', vvrat: 'V-Vrat',
