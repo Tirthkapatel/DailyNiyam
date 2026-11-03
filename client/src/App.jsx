@@ -341,6 +341,12 @@ export function AuthScreen({ t, lang, setLang, theme, setTheme, onAuthed }) {
   const [newPassword, setNewPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [invite, setInvite] = useState(null); // group preview for an invite link
+
+  useEffect(() => {
+    const c = store.get('dn-join-code');
+    if (c) api('groupPreview', { code: c }).then((r) => setInvite(r)).catch(() => { /* stale code */ });
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault(); setBusy(true); setErr('');
@@ -369,6 +375,11 @@ export function AuthScreen({ t, lang, setLang, theme, setTheme, onAuthed }) {
         <div className="tagline">{t.tagline}</div>
         <div className="motto" style={{ fontSize: 16, marginTop: 8 }}>{t.motto}</div>
         {lang === 'en' && t.mottoEn ? <div className="motto-en">{t.mottoEn}</div> : null}
+        {invite && (
+          <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 12, background: 'var(--accent-soft, #FBE3C2)', fontSize: 14.5, fontWeight: 600 }}>
+            {t.inviteBanner.replace('{group}', invite.name)}
+          </div>
+        )}
         <form onSubmit={submit} style={{ marginTop: 18 }}>
           {mode === 'signup' && (
             <div className="field"><label>{t.name}</label>
@@ -730,7 +741,7 @@ export function GroupsView({ token, user, t, N, lang }) {
   const [pendingMine, setPendingMine] = useState([]);
   const [sel, setSel] = useState(null); // group detail
   const [gname, setGname] = useState('');
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(() => store.get('dn-join-code') || '');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -753,13 +764,32 @@ export function GroupsView({ token, user, t, N, lang }) {
   };
   const join = async () => {
     setErr(''); setMsg('');
-    try { await api('joinGroup', { code }, token); setCode(''); setMsg(t.joinSent); loadList(); }
+    // accept a pasted full link/message too — pull the code out of it
+    const m = code.toUpperCase().match(/NIYAM-[A-Z0-9]+/);
+    const finalCode = m ? m[0] : code.trim();
+    try { await api('joinGroup', { code: finalCode }, token); setCode(''); store.del('dn-join-code'); setMsg(t.joinSent); loadList(); }
     catch (e) {
       setErr(e.code === 'invalid_code' ? t.joinErrCode : e.code === 'already_member' ? t.alreadyMember
         : e.code === 'already_requested' ? t.alreadyRequested : t.errGeneric);
     }
   };
   const act = async (action, args) => { try { await api(action, args, token); if (sel) openGroup(sel.group.id); loadList(); } catch { setErr(t.errGeneric); } };
+
+  const inviteText = (g) => t.shareInvite
+    .replaceAll('{name}', user?.name || '')
+    .replaceAll('{group}', g.name)
+    .replaceAll('{link}', `${window.location.origin}/join/${g.inviteCode}`)
+    .replaceAll('{code}', g.inviteCode);
+  const copyInvite = async () => {
+    if (!sel) return;
+    try { await navigator.clipboard.writeText(sel.group.inviteCode); setMsg(t.codeCopied); } catch { setErr(t.errGeneric); }
+  };
+  const shareInvite = async () => {
+    if (!sel) return;
+    const text = inviteText(sel.group);
+    if (navigator.share) { try { await navigator.share({ text }); } catch { /* user closed the sheet */ } return; }
+    try { await navigator.clipboard.writeText(text); setMsg(t.inviteCopied); } catch { setErr(t.errGeneric); }
+  };
 
   if (sel) {
     const g = sel.group;
@@ -772,19 +802,19 @@ export function GroupsView({ token, user, t, N, lang }) {
         <div className="card">
           <h2 className="sec" style={{ marginBottom: 2 }}>{g.name}</h2>
           <div className="small">{t.inviteCode}: <b style={{ letterSpacing: 1 }}>{g.inviteCode}</b></div>
-          {g.isGroupAdmin && (
-            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn ghost small" onClick={copyInvite}>📋 {t.copyBtn}</button>
+            <button type="button" className="btn ghost small" onClick={shareInvite}>📤 {t.shareBtn}</button>
+            {g.isGroupAdmin && (
               <button type="button" className="btn ghost small"
                 onClick={async () => { const r = await api('resetInviteCode', { groupId: g.id }, token).catch(() => null); if (r) openGroup(g.id); }}>
                 🔑 {t.resetCode}
               </button>
-            </div>
-          )}
-          {!g.isGroupAdmin && (
-            <div style={{ marginTop: 10 }}>
+            )}
+            {!g.isGroupAdmin && (
               <button type="button" className="btn ghost small" onClick={() => act('leaveGroup', { groupId: g.id }).then(() => setSel(null))}>{t.leave}</button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {g.isGroupAdmin && sel.requests.length > 0 && (
@@ -1266,6 +1296,19 @@ export default function App() {
     const id = setInterval(refreshStatus, 60000);
     return () => clearInterval(id);
   }, [refreshStatus]);
+
+  /* invite link: /join/NIYAM-XXXXXX (or ?join=) — stash the code, clean the URL */
+  useEffect(() => {
+    const m = window.location.pathname.match(/\/join\/(NIYAM-[A-Za-z0-9]+)/i)
+      || window.location.search.match(/[?&]join=(NIYAM-[A-Za-z0-9]+)/i);
+    if (m) {
+      store.set('dn-join-code', m[1].toUpperCase());
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
+
+  /* arriving via an invite link lands on the Groups tab once logged in */
+  useEffect(() => { if (user && store.get('dn-join-code')) setTab('groups'); }, [user]);
 
   /* session boot */
   useEffect(() => {

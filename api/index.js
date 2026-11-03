@@ -467,6 +467,17 @@ const actions = {
     return { group: { id: gid, name, inviteCode: code, adminId: u.id } };
   },
 
+  // Public (no login): powers the /join/<code> invite landing. The code
+  // itself is the shared secret, so returning the group's name + size
+  // to whoever holds the link is fine — no member data leaks.
+  async groupPreview(a) {
+    const code = normalizeCode(a.code);
+    const g = await one(`SELECT g.name, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
+      FROM groups g WHERE g.invite_code = ?`, [code]);
+    if (!g) throw { code: 'invalid_code' };
+    return { name: g.name, memberCount: Number(g.member_count) };
+  },
+
   async joinGroup(a, token) {
     const u = await requireUser(token);
     const code = normalizeCode(a.code);
