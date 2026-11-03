@@ -225,8 +225,8 @@ export function Switch({ checked, onChange, disabled }) {
 export function DetailGrid({ data, t, N }) {
   if (!data) return null;
   const chip = (v) => v
-    ? <span className="chip g">{t.done}</span>
-    : <span className="chip r">{t.notDone}</span>;
+    ? <span className="chip g">{t.yes}</span>
+    : <span className="chip r">{t.no}</span>;
   const dhyanChip = data.dhyan === 'done' ? <span className="chip g">{t.done}</span>
     : data.dhyan === 'partial' ? <span className="chip y">{t.partial} · {N(data.dhyanMinutes || 0)} {t.minUnit}</span>
     : <span className="chip r">{t.notDone}</span>;
@@ -498,7 +498,7 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved }) {
     setBusy(false);
   };
 
-  const toggleOpts = [{ v: true, label: t.done }, { v: false, label: t.notDone, cls: 'no' }];
+  const toggleOpts = [{ v: true, label: t.yes }, { v: false, label: t.no, cls: 'no' }];
   const triOpts = [{ v: 'done', label: t.done }, { v: 'partial', label: t.partial, cls: 'part' }, { v: 'no', label: t.notDone, cls: 'no' }];
 
   return (
@@ -1097,6 +1097,23 @@ export function AdminView({ token, t, N, lang, appStatus, refreshStatus }) {
     try { const r = await api('adminSetAppControls', controls, token); setControls(r.controls); setMsg(t.savedOk); if (refreshStatus) refreshStatus(); }
     catch { setMsg(t.errGeneric); }
   };
+  const seedDemo = async () => {
+    setMsg('');
+    try {
+      const r = await api('adminSeedDemo', {}, token);
+      setMsg(`${t.demoFilled} (${N(r.added || 0)} ${t.reports}${r.skipped ? `, ${N(r.skipped)} ${t.demoSkipped}` : ''})`);
+      load();
+    } catch (e) { setMsg(errText(e, t)); }
+  };
+  const clearDemo = async () => {
+    if (!window.confirm(t.demoConfirm)) return;
+    setMsg('');
+    try {
+      const r = await api('adminClearDemo', {}, token);
+      setMsg(`${t.demoCleared} (${N(r.removed || 0)} ${t.reports})`);
+      load();
+    } catch (e) { setMsg(errText(e, t)); }
+  };
   const unread = messages.filter((m) => !m.readAt).length;
 
   return (
@@ -1199,6 +1216,17 @@ export function AdminView({ token, t, N, lang, appStatus, refreshStatus }) {
             <Switch checked={controls.forceUpdate} onChange={(v) => setControls({ ...controls, forceUpdate: v })} /></div>
           <div style={{ marginTop: 14 }}>
             <button type="button" className="btn" onClick={saveControls}>{t.saveControls}</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'controls' && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <h3 className="sec">{t.demoTitle}</h3>
+          <div className="small" style={{ marginBottom: 12 }}>{t.demoNote}</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn" onClick={seedDemo}>{t.demoFill}</button>
+            <button type="button" className="btn ghost" onClick={clearDemo}>{t.demoClear}</button>
           </div>
         </div>
       )}

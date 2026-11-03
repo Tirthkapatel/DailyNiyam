@@ -657,6 +657,72 @@ const actions = {
         a.forceUpdate ? 1 : 0] });
     return actions.adminGetAppControls(a, token);
   },
+
+  /* ---- admin demo data (testing aid for the admin's OWN account) ----
+     Seed fills the last 45 days (ending yesterday) with varied sample
+     reports so every function (graphs, calendar, streaks, groups, history)
+     can be checked with realistic data. Every seeded report carries the
+     DEMO_TAG in mantavya; days that already have a report are SKIPPED, so
+     real data is never overwritten. Clear removes ONLY tagged reports. */
+  async adminSeedDemo(a, token) {
+    const u = await requireAdmin(token);
+    const DEMO_TAG = '🧪 Demo data';
+    const rnd = (seed) => { // deterministic per date: same pattern every run
+      let x = seed;
+      return () => { x = (x * 1103515245 + 12345) % 2147483648; return x / 2147483648; };
+    };
+    const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
+    let added = 0, skipped = 0;
+    const now = Date.now();
+    for (let back = 1; back <= 45; back++) {
+      const d = new Date(now - back * 86400000);
+      const iso = d.toISOString().slice(0, 10);
+      if (await one(`SELECT id FROM reports WHERE user_id = ? AND date = ?`, [u.id, iso])) { skipped++; continue; }
+      const r = rnd(back * 7919 + 13);
+      if (r() < 0.14) { skipped++; continue; } // some days stay empty, like real life
+      const full = r() < 0.3;
+      const data = cleanReportData({
+        wakeTime: pick(r, ['4:45 AM', '5:00 AM', '5:15 AM', '5:30 AM', '5:45 AM', '6:00 AM']),
+        mangala: full || r() < 0.85,
+        dhyan: full ? 'done' : pick(r, ['done', 'partial', 'done', null]),
+        dhyanMinutes: pick(r, [10, 15, 20, 25, 30]),
+        katha: full || r() < 0.8,
+        vachanamrut: full || r() < 0.75,
+        chesta: full || r() < 0.7,
+        mandir: full || r() < 0.65,
+        dandvat: full ? pick(r, [11, 21, 51]) : pick(r, [0, 5, 11, 21]),
+        bhajanMinutes: full ? 60 + Math.floor(r() * 45) : Math.floor(r() * 75),
+        dhunMinutes: full ? 30 + Math.floor(r() * 30) : Math.floor(r() * 40),
+        pradakshina: full ? pick(r, [5, 11]) : pick(r, [0, 0, 1, 5]),
+        pradakshinaPlace: pick(r, ['વડતાલ', 'વિરસદ', 'ઘર મંદિર', '']),
+        mansiPuja: full ? pick(r, [3, 5]) : Math.floor(r() * 4),
+        sleepTime: pick(r, ['10:00 PM', '10:15 PM', '10:30 PM', '10:45 PM', '11:00 PM']),
+        mantavya: DEMO_TAG,
+        vvrat: r() < 0.8 ? 'yes' : 'no',
+        vvratNote: '',
+      });
+      const created = now - back * 86400000 + 3600000;
+      await db.execute({ sql: `INSERT INTO reports (user_id, date, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        args: [u.id, iso, JSON.stringify(data), created, created] });
+      added++;
+    }
+    return { added, skipped };
+  },
+
+  async adminClearDemo(a, token) {
+    const u = await requireAdmin(token);
+    const rows = await all(`SELECT id, data FROM reports WHERE user_id = ?`, [u.id]);
+    let removed = 0;
+    for (const row of rows) {
+      try {
+        if (JSON.parse(row.data).mantavya === '🧪 Demo data') {
+          await db.execute({ sql: `DELETE FROM reports WHERE id = ?`, args: [row.id] });
+          removed++;
+        }
+      } catch (_) { /* unparsable legacy row: leave it alone */ }
+    }
+    return { removed };
+  },
 };
 
 /* ---------------- http layer ---------------- */
