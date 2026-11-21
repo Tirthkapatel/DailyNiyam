@@ -118,7 +118,12 @@ const SCHEMA = [
      latest_version TEXT NOT NULL DEFAULT '',
      update_notes TEXT NOT NULL DEFAULT '',
      download_url TEXT NOT NULL DEFAULT '',
-     force_update INTEGER NOT NULL DEFAULT 0
+     force_update INTEGER NOT NULL DEFAULT 0,
+     card_on INTEGER NOT NULL DEFAULT 0,
+     card_title TEXT NOT NULL DEFAULT '',
+     card_text TEXT NOT NULL DEFAULT '',
+     card_button_text TEXT NOT NULL DEFAULT '',
+     card_url TEXT NOT NULL DEFAULT ''
    )`,
   `CREATE TABLE IF NOT EXISTS user_settings (
      user_id INTEGER PRIMARY KEY,
@@ -175,6 +180,11 @@ function ensureSchema() {
         `ALTER TABLE support_messages ADD COLUMN user_deleted_at INTEGER`,
         `ALTER TABLE events ADD COLUMN body TEXT NOT NULL DEFAULT ''`,
         `ALTER TABLE reports ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE app_settings ADD COLUMN card_on INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE app_settings ADD COLUMN card_title TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE app_settings ADD COLUMN card_text TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE app_settings ADD COLUMN card_button_text TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE app_settings ADD COLUMN card_url TEXT NOT NULL DEFAULT ''`,
       ]) { try { await db.execute(s); } catch { /* already there */ } }
       // The group creator is the 'owner' member (immutable role).
       await db.execute(`UPDATE group_members SET role = 'owner'
@@ -481,6 +491,10 @@ const actions = {
       update: {
         latestVersion: s.latest_version || '', notes: s.update_notes || '',
         downloadUrl: s.download_url || '', forceUpdate: !!s.force_update,
+      },
+      card: {
+        on: !!s.card_on, title: s.card_title || '', text: s.card_text || '',
+        buttonText: s.card_button_text || '', url: s.card_url || '',
       },
     };
   },
@@ -1101,17 +1115,22 @@ const actions = {
       announcementText: s.announcement_text || '', announcementOn: !!s.announcement_on,
       maintenanceOn: !!s.maintenance_on, maintenanceMsg: s.maintenance_msg || '',
       latestVersion: s.latest_version || '', updateNotes: s.update_notes || '',
-      downloadUrl: s.download_url || '', forceUpdate: !!s.force_update } };
+      downloadUrl: s.download_url || '', forceUpdate: !!s.force_update,
+      cardOn: !!s.card_on, cardTitle: s.card_title || '', cardText: s.card_text || '',
+      cardButtonText: s.card_button_text || '', cardUrl: s.card_url || '' } };
   },
 
   async adminSetAppControls(a, token) {
     await requireAdmin(token);
     await db.execute({ sql: `UPDATE app_settings SET announcement_text = ?, announcement_on = ?, maintenance_on = ?,
-      maintenance_msg = ?, latest_version = ?, update_notes = ?, download_url = ?, force_update = ? WHERE id = 1`,
+      maintenance_msg = ?, latest_version = ?, update_notes = ?, download_url = ?, force_update = ?,
+      card_on = ?, card_title = ?, card_text = ?, card_button_text = ?, card_url = ? WHERE id = 1`,
       args: [String(a.announcementText || '').slice(0, 500), a.announcementOn ? 1 : 0, a.maintenanceOn ? 1 : 0,
         String(a.maintenanceMsg || '').slice(0, 500), String(a.latestVersion || '').trim().slice(0, 32),
         String(a.updateNotes || '').slice(0, 1000), String(a.downloadUrl || '').trim().slice(0, 500),
-        a.forceUpdate ? 1 : 0] });
+        a.forceUpdate ? 1 : 0,
+        a.cardOn ? 1 : 0, String(a.cardTitle || '').slice(0, 120), String(a.cardText || '').slice(0, 1000),
+        String(a.cardButtonText || '').slice(0, 60), String(a.cardUrl || '').trim().slice(0, 500)] });
     return actions.adminGetAppControls(a, token);
   },
 

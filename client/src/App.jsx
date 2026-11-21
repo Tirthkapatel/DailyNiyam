@@ -543,7 +543,7 @@ function Ring({ pct, N }) {
   );
 }
 
-export function ReportForm({ token, t, N, lang, date, setDate, onSaved, reportConfig }) {
+export function ReportForm({ token, t, N, lang, date, setDate, onSaved, reportConfig, appCard }) {
   const [data, setData] = useState(EMPTY_REPORT);
   const [existing, setExisting] = useState(null); // server report row wrapper
   const [busy, setBusy] = useState(false);
@@ -614,6 +614,18 @@ export function ReportForm({ token, t, N, lang, date, setDate, onSaved, reportCo
           ? <div className="banner inhero">{t.submittedBanner}</div>
           : <div className="notice">{t.noReport}</div>}
       </div>
+
+      {appCard && appCard.on && (appCard.title || appCard.text) ? (
+        <div className="card" style={{ marginBottom: 14 }}>
+          {appCard.title ? <div style={{ fontWeight: 700, fontSize: 16.5, marginBottom: appCard.text ? 6 : 0 }}>⭐ {appCard.title}</div> : null}
+          {appCard.text ? <div className="small" style={{ fontSize: 14.5, whiteSpace: 'pre-wrap' }}>{appCard.text}</div> : null}
+          {appCard.url ? (
+            <div style={{ marginTop: 10 }}>
+              <a className="btn small" href={appCard.url} target="_blank" rel="noreferrer">{appCard.buttonText || t.cardOpen}</a>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {locked ? <div className="locknote">🔒 {t.lockedNote}</div> : null}
       {err ? <div className="err">{err}</div> : null}
@@ -1537,6 +1549,20 @@ export function AdminView({ token, t, N, lang, appStatus, refreshStatus }) {
               onChange={(e) => setControls({ ...controls, downloadUrl: e.target.value })} /></div>
           <div className="switchrow"><span><b>{t.forceUpdate}</b></span>
             <Switch checked={controls.forceUpdate} onChange={(v) => setControls({ ...controls, forceUpdate: v })} /></div>
+          <h3 className="sec">⭐ {t.cardSection}</h3>
+          <div className="switchrow"><span><b>{t.cardSection}</b></span>
+            <Switch checked={!!controls.cardOn} onChange={(v) => setControls({ ...controls, cardOn: v })} /></div>
+          <div className="row"><div className="lab">{t.cardTitleL}</div>
+            <input className="textin" style={{ maxWidth: 320 }} value={controls.cardTitle || ''}
+              onChange={(e) => setControls({ ...controls, cardTitle: e.target.value })} /></div>
+          <textarea className="textin" value={controls.cardText || ''} placeholder={t.cardTextL}
+            onChange={(e) => setControls({ ...controls, cardText: e.target.value })} />
+          <div className="row"><div className="lab">{t.cardBtnL}</div>
+            <input className="textin" style={{ maxWidth: 220 }} value={controls.cardButtonText || ''}
+              onChange={(e) => setControls({ ...controls, cardButtonText: e.target.value })} /></div>
+          <div className="row"><div className="lab">{t.cardUrlL}</div>
+            <input className="textin" style={{ maxWidth: 320 }} value={controls.cardUrl || ''} placeholder="https://…"
+              onChange={(e) => setControls({ ...controls, cardUrl: e.target.value })} /></div>
           <div style={{ marginTop: 14 }}>
             <button type="button" className="btn" onClick={saveControls}>{t.saveControls}</button>
           </div>
@@ -1913,7 +1939,7 @@ export default function App() {
 
       <main className="main" key={tab}>
         {tab === 'report' && (
-          <ReportForm token={token} t={t} N={N} lang={lang} date={date} setDate={setDate} onSaved={loadReports} reportConfig={reportConfig} />
+          <ReportForm token={token} t={t} N={N} lang={lang} date={date} setDate={setDate} onSaved={loadReports} reportConfig={reportConfig} appCard={appStatus ? appStatus.card : null} />
         )}
         {tab === 'progress' && <ProgressView reports={reports} t={t} N={N} lang={lang} />}
         {tab === 'history' && (
