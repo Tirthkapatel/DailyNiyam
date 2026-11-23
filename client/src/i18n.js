@@ -31,7 +31,7 @@ export const gu = {
   submittedBanner: 'રિપોર્ટ સબમિટ કરી દીધો છે 🙏',
   dayProgress: 'દિવસની પ્રગતિ',
   noReport: 'આ તારીખનો રિપોર્ટ હજી ભરાયો નથી — નીચે ભરીને સાચવો.',
-  lockedNote: 'આ રિપોર્ટ હવે બદલી શકાશે નહીં (3 કલાકની edit બારી પૂરી થઈ)',
+  lockedNote: 'આ રિપોર્ટ હવે બદલી શકાશે નહીં (12 કલાકની edit બારી પૂરી થઈ)',
   percentDone: 'પૂર્ણ',
   // progress / history
   last30: 'છેલ્લા 30 દિવસ — પૂર્ણતા', bhajanGraph: 'ભજન (મિનિટ)', streak: 'સળંગ દિવસ', average: 'સરેરાશ',
@@ -163,7 +163,7 @@ export const en = {
   submittedBanner: 'Report has been submitted 🙏',
   dayProgress: "Day's progress",
   noReport: 'No report filled for this date yet — fill it below and save.',
-  lockedNote: 'This report can no longer be changed (the 3-hour edit window is over)',
+  lockedNote: 'This report can no longer be changed (the 12-hour edit window is over)',
   percentDone: 'complete',
   last30: 'Last 30 days — completion', bhajanGraph: 'Bhajan (minutes)', streak: 'Day streak', average: 'Average',
   totalBhajan: 'Total bhajan', reportsCount: 'Reports', noReportDay: 'No report', noReports: 'No reports yet',
