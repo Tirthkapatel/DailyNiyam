@@ -159,6 +159,10 @@ const SCHEMA = [
      seen_at INTEGER
    )`,
   `CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, seen_at)`,
+  `CREATE TABLE IF NOT EXISTS game_access (
+     user_id INTEGER PRIMARY KEY,
+     created_at INTEGER NOT NULL
+   )`,
 ];
 
 let schemaReady = null;
@@ -335,6 +339,15 @@ function publicUser(u) {
   return { id: u.id, name: u.name, email: u.email, isAdmin: !!u.is_admin, createdAt: u.created_at,
     nameChangedAt: u.name_changed_at || null,
     deletionUntil: u.deleted_at ? u.deleted_at + FIVE_DAYS : null };
+}
+async function gameAccessOf(userId) {
+  const r = await one(`SELECT user_id FROM game_access WHERE user_id = ?`, [userId]);
+  return !!r;
+}
+async function publicUserFull(u) {
+  const pu = publicUser(u);
+  pu.gameAccess = await gameAccessOf(u.id);
+  return pu;
 }
 async function requireUser(token) {
   const u = await userFromToken(token);
@@ -535,7 +548,7 @@ const actions = {
     }
     await guardClear(key);
     const token = await createSession(u.id);
-    return { token, user: publicUser(u) };
+    return { token, user: await publicUserFull(u) };
   },
 
   async logout(a, token) {
@@ -545,7 +558,7 @@ const actions = {
 
   async me(a, token) {
     const u = await requireUser(token);
-    return { user: publicUser(u) };
+    return { user: await publicUserFull(u) };
   },
 
   /* Name change — at most once every 5 days (his rule). The client
@@ -1045,10 +1058,12 @@ const actions = {
     await requireAdmin(token);
     const rows = await all(`SELECT u.id, u.name, u.email, u.is_admin, u.created_at,
       (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS report_count,
-      (SELECT COUNT(*) FROM group_members m WHERE m.user_id = u.id) AS group_count
+      (SELECT COUNT(*) FROM group_members m WHERE m.user_id = u.id) AS group_count,
+      (SELECT COUNT(*) FROM game_access ga WHERE ga.user_id = u.id) AS game_access
       FROM users u ORDER BY u.created_at ASC`);
     return { users: rows.map((r) => ({ id: r.id, name: r.name, email: r.email, isAdmin: !!r.is_admin,
-      createdAt: r.created_at, reportCount: Number(r.report_count), groupCount: Number(r.group_count) })) };
+      createdAt: r.created_at, reportCount: Number(r.report_count), groupCount: Number(r.group_count),
+      gameAccess: Number(r.game_access) > 0 })) };
   },
 
   async adminGetUserReports(a, token) {
@@ -1069,6 +1084,18 @@ const actions = {
     await db.execute({ sql: `UPDATE users SET pass_hash = ? WHERE id = ?`, args: [hashPassword(np), target.id] });
     await db.execute({ sql: `DELETE FROM sessions WHERE user_id = ?`, args: [target.id] });
     return { ok: true };
+  },
+
+  async adminSetGameAccess(a, token) {
+    await requireAdmin(token);
+    const target = await one(`SELECT * FROM users WHERE id = ?`, [Number(a.userId) || 0]);
+    if (!target) throw { code: 'not_found' };
+    if (a.granted) {
+      await db.execute({ sql: `INSERT OR IGNORE INTO game_access (user_id, created_at) VALUES (?, ?)`, args: [target.id, Date.now()] });
+    } else {
+      await db.execute({ sql: `DELETE FROM game_access WHERE user_id = ?`, args: [target.id] });
+    }
+    return { ok: true, userId: target.id, granted: !!a.granted };
   },
 
   async adminListGroups(a, token) {
