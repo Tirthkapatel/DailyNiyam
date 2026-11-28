@@ -500,12 +500,7 @@ const actions = {
       announcement: { on: !!s.announcement_on, text: s.announcement_text || '' },
       maintenance: { on: !!s.maintenance_on, msg: s.maintenance_msg || '' },
       update: {
-        // RESCUE OVERRIDE (28 Nov, temporary): admin locked himself out
-        // with latest=V3.4.4 + expired URL + forceUpdate. Report a
-        // version nobody can be older than, so NO update popup shows
-        // anywhere until he fixes App Controls; then REMOVE this line.
-        latestVersion: 'V0.0.0',
-        notes: s.update_notes || '',
+        latestVersion: s.latest_version || '', notes: s.update_notes || '',
         downloadUrl: s.download_url || '', forceUpdate: !!s.force_update,
       },
       card: {
