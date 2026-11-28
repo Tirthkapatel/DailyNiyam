@@ -925,6 +925,59 @@ const actions = {
       members, requests, feed, feedDates: dates };
   },
 
+  /* Group progress for the group owner/admins ONLY: every member's
+     average completion % for the last 30 days vs the 30 days before
+     that. Completion is computed per report with the SAME function
+     the app uses everywhere (computeCompletion + the member's own
+     report config), averaged over the days they actually reported —
+     exactly like the Progress screen's own average. -1 (null) means
+     the member filed no report in that window. */
+  async getGroupProgress(a, token) {
+    const u = await requireUser(token);
+    const g = await one(`SELECT * FROM groups WHERE id = ?`, [Number(a.groupId) || 0]);
+    if (!g) throw { code: 'not_found' };
+    const membership = await one(`SELECT * FROM group_members WHERE group_id = ? AND user_id = ?`, [g.id, u.id]);
+    if (!membership) throw { code: 'not_member' };
+    const myRole = g.admin_id === u.id ? 'owner' : (membership.role === 'admin' ? 'admin' : 'member');
+    if (myRole === 'member') throw { code: 'not_group_admin' };
+    const memberRows = await all(`SELECT u.id, u.name FROM group_members m JOIN users u ON u.id = m.user_id
+      WHERE m.group_id = ? ORDER BY m.joined_at ASC`, [g.id]);
+    const shift = (ds, days) => {
+      const d = new Date(ds + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const today = todayIST();
+    const curFrom = shift(today, -29);
+    const prevFrom = shift(today, -59);
+    const rows = await all(`SELECT r.user_id, r.date, r.data FROM reports r
+      WHERE r.user_id IN (SELECT user_id FROM group_members WHERE group_id = ?)
+        AND r.date >= ? AND r.date <= ?`, [g.id, prevFrom, today]);
+    const cfgByUser = new Map();
+    const sums = new Map();
+    for (const r of rows) {
+      if (!cfgByUser.has(r.user_id)) cfgByUser.set(r.user_id, await reportConfig(r.user_id));
+      let data;
+      try { data = JSON.parse(r.data); } catch { continue; }
+      delete data.mangalaAarti; // legacy duplicate of mangala — never counted
+      const c = computeCompletion(data, cfgByUser.get(r.user_id));
+      const e = sums.get(r.user_id) || { cs: 0, cn: 0, ps: 0, pn: 0 };
+      if (r.date >= curFrom) { e.cs += c; e.cn += 1; } else { e.ps += c; e.pn += 1; }
+      sums.set(r.user_id, e);
+    }
+    const members = memberRows.map((m) => {
+      const e = sums.get(m.id) || { cs: 0, cn: 0, ps: 0, pn: 0 };
+      return {
+        userId: m.id, name: m.name,
+        cur: e.cn ? Math.round(e.cs / e.cn) : null,
+        prev: e.pn ? Math.round(e.ps / e.pn) : null,
+        curDays: e.cn, prevDays: e.pn,
+      };
+    });
+    members.sort((x, y) => (y.cur ?? -1) - (x.cur ?? -1) || x.name.localeCompare(y.name));
+    return { members, curFrom, curTo: today, prevFrom, prevTo: shift(today, -30) };
+  },
+
   async approveJoinRequest(a, token) {
     const u = await requireUser(token);
     const req = await one(`SELECT * FROM group_join_requests WHERE id = ? AND status = 'pending'`, [Number(a.requestId) || 0]);
