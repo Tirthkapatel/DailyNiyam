@@ -155,6 +155,9 @@ const SCHEMA = [
      group_name TEXT NOT NULL DEFAULT '',
      actor_name TEXT NOT NULL DEFAULT '',
      body TEXT NOT NULL DEFAULT '',
+     title TEXT NOT NULL DEFAULT '',
+     actor_id INTEGER NOT NULL DEFAULT 0,
+     ref_date TEXT NOT NULL DEFAULT '',
      created_at INTEGER NOT NULL,
      seen_at INTEGER
    )`,
@@ -183,6 +186,9 @@ function ensureSchema() {
         `ALTER TABLE support_messages ADD COLUMN replied_by INTEGER`,
         `ALTER TABLE support_messages ADD COLUMN user_deleted_at INTEGER`,
         `ALTER TABLE events ADD COLUMN body TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE events ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+        `ALTER TABLE events ADD COLUMN actor_id INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE events ADD COLUMN ref_date TEXT NOT NULL DEFAULT ''`,
         `ALTER TABLE reports ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0`,
         `ALTER TABLE app_settings ADD COLUMN card_on INTEGER NOT NULL DEFAULT 0`,
         `ALTER TABLE app_settings ADD COLUMN card_title TEXT NOT NULL DEFAULT ''`,
@@ -295,10 +301,11 @@ async function resolveInvite(segment) {
 }
 
 /* In-app event (the clients poll these and turn them into notifications). */
-async function pushEvent(userId, type, group, actorName, body = '') {
-  await db.execute({ sql: `INSERT INTO events (user_id, type, group_id, group_name, actor_name, body, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', String(body || '').slice(0, 300), Date.now()] });
+async function pushEvent(userId, type, group, actorName, body = '', opts = {}) {
+  await db.execute({ sql: `INSERT INTO events (user_id, type, group_id, group_name, actor_name, body, title, actor_id, ref_date, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [userId, type, group ? group.id : 0, group ? group.name : '', actorName || '', String(body || '').slice(0, 300),
+      String(opts.title || '').slice(0, 100), Number(opts.actorId) || 0, String(opts.refDate || ''), Date.now()] });
 }
 
 /* Group roles: 'owner' (the creator — from groups.admin_id, can never
@@ -339,15 +346,6 @@ function publicUser(u) {
   return { id: u.id, name: u.name, email: u.email, isAdmin: !!u.is_admin, createdAt: u.created_at,
     nameChangedAt: u.name_changed_at || null,
     deletionUntil: u.deleted_at ? u.deleted_at + FIVE_DAYS : null };
-}
-async function gameAccessOf(userId) {
-  const r = await one(`SELECT user_id FROM game_access WHERE user_id = ?`, [userId]);
-  return !!r;
-}
-async function publicUserFull(u) {
-  const pu = publicUser(u);
-  pu.gameAccess = await gameAccessOf(u.id);
-  return pu;
 }
 async function requireUser(token) {
   const u = await userFromToken(token);
@@ -548,7 +546,7 @@ const actions = {
     }
     await guardClear(key);
     const token = await createSession(u.id);
-    return { token, user: await publicUserFull(u) };
+    return { token, user: publicUser(u) };
   },
 
   async logout(a, token) {
@@ -558,7 +556,7 @@ const actions = {
 
   async me(a, token) {
     const u = await requireUser(token);
-    return { user: await publicUserFull(u) };
+    return { user: publicUser(u) };
   },
 
   /* Name change — at most once every 5 days (his rule). The client
@@ -671,7 +669,7 @@ const actions = {
               `SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ?`,
               [g.id, u.id]);
             for (const m of mates) {
-              await pushEvent(m.user_id, 'report_submitted', { id: g.id, name: g.name }, u.name);
+              await pushEvent(m.user_id, 'report_submitted', { id: g.id, name: g.name }, u.name, '', { actorId: u.id, refDate: a.date });
             }
           }
         } catch { /* best effort */ }
@@ -849,7 +847,8 @@ const actions = {
         args: [Date.now(), ...ids] });
     }
     return { events: rows.map((r) => ({ id: r.id, type: r.type, groupId: r.group_id,
-      groupName: r.group_name, actorName: r.actor_name, body: r.body || '', createdAt: r.created_at })) };
+      groupName: r.group_name, actorName: r.actor_name, body: r.body || '', title: r.title || '',
+      actorId: r.actor_id || 0, refDate: r.ref_date || '', createdAt: r.created_at })) };
   },
 
   async joinGroup(a, token) {
@@ -1058,12 +1057,10 @@ const actions = {
     await requireAdmin(token);
     const rows = await all(`SELECT u.id, u.name, u.email, u.is_admin, u.created_at,
       (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS report_count,
-      (SELECT COUNT(*) FROM group_members m WHERE m.user_id = u.id) AS group_count,
-      (SELECT COUNT(*) FROM game_access ga WHERE ga.user_id = u.id) AS game_access
+      (SELECT COUNT(*) FROM group_members m WHERE m.user_id = u.id) AS group_count
       FROM users u ORDER BY u.created_at ASC`);
     return { users: rows.map((r) => ({ id: r.id, name: r.name, email: r.email, isAdmin: !!r.is_admin,
-      createdAt: r.created_at, reportCount: Number(r.report_count), groupCount: Number(r.group_count),
-      gameAccess: Number(r.game_access) > 0 })) };
+      createdAt: r.created_at, reportCount: Number(r.report_count), groupCount: Number(r.group_count) })) };
   },
 
   async adminGetUserReports(a, token) {
@@ -1086,16 +1083,19 @@ const actions = {
     return { ok: true };
   },
 
-  async adminSetGameAccess(a, token) {
-    await requireAdmin(token);
-    const target = await one(`SELECT * FROM users WHERE id = ?`, [Number(a.userId) || 0]);
-    if (!target) throw { code: 'not_found' };
-    if (a.granted) {
-      await db.execute({ sql: `INSERT OR IGNORE INTO game_access (user_id, created_at) VALUES (?, ?)`, args: [target.id, Date.now()] });
-    } else {
-      await db.execute({ sql: `DELETE FROM game_access WHERE user_id = ?`, args: [target.id] });
+  /* Admin broadcasts a notification to every user (any topic, any
+     time). Delivered through the events system: users see it as a
+     notification when the app polls (open / next open). */
+  async adminBroadcast(a, token) {
+    const adm = await requireAdmin(token);
+    const title = String(a.title || '').trim().slice(0, 100);
+    const body = String(a.body || '').trim().slice(0, 300);
+    if (!title && !body) throw { code: 'empty_notice' };
+    const users = await all(`SELECT id FROM users WHERE id != ?`, [adm.id]);
+    for (const t of users) {
+      await pushEvent(t.id, 'admin_notice', null, adm.name, body, { title });
     }
-    return { ok: true, userId: target.id, granted: !!a.granted };
+    return { ok: true, sent: users.length };
   },
 
   async adminListGroups(a, token) {
